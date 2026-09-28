@@ -29,9 +29,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
 
+  const apiPath = (path: string) => {
+    const base = '/erp'
+    return path.startsWith(base) ? path : `${base}${path}`
+  }
+
   const refreshUser = async () => {
     try {
-      const res = await fetch('/api/auth/me')
+      const res = await fetch(apiPath('/api/auth/me'))
       if (res.ok) {
         const data = await res.json()
         if (data.success && data.user) {
@@ -53,7 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (username: string, password: string) => {
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(apiPath('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -61,7 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json()
       if (res.ok && data.success) {
         setUser(data.user)
-        router.push('/')
+        router.replace('/')
         router.refresh()
         return { success: true }
       }
@@ -73,12 +78,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' })
+      await fetch(apiPath('/api/auth/logout'), { method: 'POST' })
     } catch (err) {
       console.error('Logout error:', err)
     } finally {
+      // Cleanse client session: wipe local and session storage
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.clear()
+          sessionStorage.clear()
+          const cookieKeys = ['auth_token', 'token', 'session', 'user']
+          cookieKeys.forEach((key) => {
+            document.cookie = `${key}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0;`
+            document.cookie = `${key}=; Path=/erp; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0;`
+          })
+        }
+      } catch (storageErr) {
+        console.error('Error clearing client storage:', storageErr)
+      }
+
       setUser(null)
-      router.push('/login')
+      router.replace('/login')
       router.refresh()
     }
   }

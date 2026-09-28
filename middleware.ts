@@ -34,13 +34,21 @@ async function verifyToken(token: string): Promise<TokenPayload | null> {
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
-  // 1. Skip Next.js internals, static files, and public images
+  // 1. Allow public access to Next.js internal static assets & files with extensions
   if (
     pathname.startsWith('/_next') ||
-    pathname.startsWith('/api/auth/login') ||
-    pathname.startsWith('/api/auth/logout') ||
-    pathname.includes('.') ||
-    pathname === '/favicon.ico'
+    pathname === '/favicon.ico' ||
+    /\.(png|jpg|jpeg|svg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$/i.test(pathname)
+  ) {
+    return NextResponse.next()
+  }
+
+  // 2. Allow public access to authentication endpoints
+  if (
+    pathname === '/api/auth/login' ||
+    pathname === '/api/auth/logout' ||
+    pathname === '/api/auth/me' ||
+    pathname === '/api/login'
   ) {
     return NextResponse.next()
   }
@@ -48,8 +56,8 @@ export async function middleware(req: NextRequest) {
   const token = req.cookies.get(AUTH_COOKIE_NAME)?.value
   const user = token ? await verifyToken(token) : null
 
-  // 2. Allow public access to /login if unauthenticated, or redirect to home if already logged in
-  if (pathname === '/login') {
+  // 3. Allow public access to /login if unauthenticated, or redirect to home if already logged in
+  if (pathname === '/login' || pathname.startsWith('/login/')) {
     if (user) {
       const homeUrl = req.nextUrl.clone()
       homeUrl.pathname = '/'
@@ -58,13 +66,9 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next()
   }
 
-  // 3. API Route Guarding
+  // 4. API Route Guarding:
+  // If unauthenticated, reject with 401 Unauthorized
   if (pathname.startsWith('/api/')) {
-    // me route can be accessed; will return 401 if unauthenticated
-    if (pathname === '/api/auth/me') {
-      return NextResponse.next()
-    }
-
     if (!user) {
       return NextResponse.json(
         { success: false, error: 'Unauthorized: Please log in to continue.' },
@@ -99,7 +103,7 @@ export async function middleware(req: NextRequest) {
     })
   }
 
-  // 4. Page routes: redirect unauthenticated users to /login
+  // 5. Page routes (including / and all subpaths): redirect unauthenticated users to /login preserving basePath
   if (!user) {
     const loginUrl = req.nextUrl.clone()
     loginUrl.pathname = '/login'
@@ -110,13 +114,6 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     */
-    '/((?!_next/static|_next/image|favicon.ico).*)',
-  ],
+  matcher: ['/:path*'],
 }
+
