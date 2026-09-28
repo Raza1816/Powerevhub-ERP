@@ -1,4 +1,5 @@
 const { PrismaClient } = require('@prisma/client')
+const bcrypt = require('bcryptjs')
 const prisma = new PrismaClient()
 
 async function main() {
@@ -7,6 +8,40 @@ async function main() {
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const activeMonth = `${year}-${month}`
+
+  // 1. Ensure Static System Accounts (Admin & Viewer)
+  console.log('Checking static authentication accounts...')
+  const adminUser = await prisma.user.findUnique({ where: { username: 'admin' } })
+  if (!adminUser) {
+    const adminHash = bcrypt.hashSync('admin123', 10)
+    await prisma.user.create({
+      data: {
+        username: 'admin',
+        passwordHash: adminHash,
+        role: 'admin',
+        name: 'System Admin',
+      },
+    })
+    console.log('✓ Default Admin account created (username: admin, role: admin).')
+  } else {
+    console.log('✓ Admin account verified.')
+  }
+
+  const viewerUser = await prisma.user.findUnique({ where: { username: 'viewer' } })
+  if (!viewerUser) {
+    const viewerHash = bcrypt.hashSync('viewer123', 10)
+    await prisma.user.create({
+      data: {
+        username: 'viewer',
+        passwordHash: viewerHash,
+        role: 'viewer',
+        name: 'Read-Only Viewer',
+      },
+    })
+    console.log('✓ Default Viewer account created (username: viewer, role: viewer).')
+  } else {
+    console.log('✓ Viewer account verified.')
+  }
 
   // Check unit rates
   const existingRates = await prisma.unitRate.count()
@@ -43,6 +78,12 @@ async function main() {
       { category: 'PAYMENT_METHOD', value: 'Bank Transfer', sortOrder: 2 },
       { category: 'PAYMENT_METHOD', value: 'Cheque', sortOrder: 3 },
       { category: 'PAYMENT_METHOD', value: 'Online Portal', sortOrder: 4 },
+      { category: 'VEHICLE_BRAND', value: 'BYD', sortOrder: 1 },
+      { category: 'VEHICLE_BRAND', value: 'MG', sortOrder: 2 },
+      { category: 'VEHICLE_BRAND', value: 'Deepal', sortOrder: 3 },
+      { category: 'VEHICLE_BRAND', value: 'Audi', sortOrder: 4 },
+      { category: 'VEHICLE_BRAND', value: 'Porsche', sortOrder: 5 },
+      { category: 'VEHICLE_BRAND', value: 'Hyundai', sortOrder: 6 },
     ]
     for (const d of dropdowns) {
       await prisma.dropdownValue.create({ data: d })
