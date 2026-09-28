@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: power-ev-hub-erp
+    runtime: node
+    plan: starter
+    buildCommand: ./render-build.sh
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: power-ev-hub-db
+          property: connectionString
+      - key: NEXT_PUBLIC_APP_NAME
+        value: "Power EV Hub"
+      - key: NEXT_PUBLIC_DEFAULT_CURRENCY
+        value: "PKR"
+      - key: NEXT_PUBLIC_CURRENCY_SYMBOL
+        value: "Rs."
+
+databases:
+  - name: power-ev-hub-db
+    plan: free
+    databaseName: power_ev_hub
+    user: power_ev_user

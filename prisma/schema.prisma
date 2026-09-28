@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Branch is stored as a plain String ("Karachi" | "Lahore" | "All") — SQLite does not support enums
+
+model UnitRate {
+  id            String   @id @default(cuid())
+  itemName      String
+  itemKey       String   @unique
+  rate          Float
+  unit          String   @default("meter")
+  effectiveDate DateTime @default(now())
+  active        Boolean  @default(true)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model UnitRateHistory {
+  id        String   @id @default(cuid())
+  itemKey   String
+  itemName  String
+  oldRate   Float
+  newRate   Float
+  unit      String
+  changedAt DateTime @default(now())
+  notes     String?
+}
+
+model DropdownValue {
+  id        String   @id @default(cuid())
+  category  String // SOURCE, TECHNICIAN, PAYMENT_METHOD, INVENTORY_ITEM
+  value     String
+  color     String?
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, value])
+}
+
+model CrmJob {
+  branch         String @default("Karachi")
+  id             String @id @default(cuid())
+  sn             Int // Monthly sequential counter (resets to 1 each month)
+  date           String // "YYYY-MM-DD"
+  monthKey       String // "YYYY-MM"
+  clientName     String
+  contactNo      String
+  addressArea    String
+  source         String // "Direct", "MJD/MTP", "Sarah South", etc.
+  technicianName String // "Team Alpha", "Team Ali", etc.
+
+  // Material Usage & Locked Unit Rates
+  cable16mmMeter     Float @default(0)
+  cable16mmUnitCost  Float @default(0) // Locked in at time of creation!
+  cable16mmTotalCost Float @default(0)
+
+  cable10mmMeter     Float @default(0)
+  cable10mmUnitCost  Float @default(0) // Locked in at time of creation!
+  cable10mmTotalCost Float @default(0)
+
+  cable6mmMeter     Float @default(0)
+  cable6mmUnitCost  Float @default(0) // Locked in at time of creation!
+  cable6mmTotalCost Float @default(0)
+
+  breakerBoxQty       Float @default(0)
+  breakerBoxUnitCost  Float @default(0) // Locked in at time of creation!
+  breakerBoxTotalCost Float @default(0)
+
+  // Additional Materials tracked in inventory & Locked Unit Rates
+  earthingRodQty       Float @default(0)
+  earthingRodUnitCost  Float @default(0) // Locked in at time of creation!
+  earthingRodTotalCost Float @default(0)
+
+  wpbQty       Float @default(0)
+  wpbUnitCost  Float @default(0) // Locked in at time of creation!
+  wpbTotalCost Float @default(0)
+
+  ninUvrQty       Float @default(0)
+  ninUvrUnitCost  Float @default(0) // Locked in at time of creation!
+  ninUvrTotalCost Float @default(0)
+
+  rcboBreakerQty       Float @default(0)
+  rcboBreakerUnitCost  Float @default(0) // Locked in at time of creation!
+  rcboBreakerTotalCost Float @default(0)
+
+  // Additional Supply and Misc Expenses
+  additionalSupplyName String @default("")
+  additionalSupplyCost Float  @default(0)
+  miscExp              Float  @default(0)
+
+  // EV Vehicle Brand
+  vehicleBrand         String?   @default("BYD")
+
+  // Calculated Financials
+  totalJobCost      Float @default(0) // 16mm + 10mm + 6mm cost + breaker cost + additionalSupplyCost + miscExp
+  billAmount        Float @default(0) // Manual input
+  grossProfit       Float @default(0) // billAmount - totalJobCost
+  grossProfitMargin Float @default(0) // (grossProfit / billAmount) * 100
+
+  // Payment Details & Status
+  payStatus     String   @default("Trade Receivable") // "Paid" | "Trade Receivable" | "Voucher"
+  paymentStatus String   @default("Trade Receivable") // "Paid" | "Trade Receivable" | "Voucher"
+  paymentMethod String   @default("Cash") // "Cash" | "Bank" | "BYD Voucher"
+  paidDate      String?
+
+  // BYD Voucher Workflow Tracking
+  isVoucher                Boolean   @default(false)
+  voucherGrossAmount       Float?    @default(65000)
+  voucherDeduction         Float?    @default(13850)
+  voucherNetClaim          Float?    @default(51150)
+  voucherSettled           Boolean   @default(false)
+  voucherSettledDate       DateTime?
+  customerExcessPaid       Float?    @default(0)
+  customerExcessReceivable Float?    @default(0)
+
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([monthKey])
+  @@index([date])
+  @@index([payStatus])
+  @@index([paymentStatus])
+  @@index([vehicleBrand])
+  @@index([isVoucher])
+  @@index([voucherSettled])
+  @@index([source])
+  @@index([technicianName])
+}
+
+model InventoryLedger {
+  branch       String   @default("Karachi")
+  id           String   @id @default(cuid())
+  date         String // "YYYY-MM-DD"
+  monthKey     String // "YYYY-MM"
+  itemName     String // e.g. "10mm Cable", "6mm Cable", "DB Box", "Earthing Rod", "WPB", "NIN UVR", "RCBO Breaker"
+  itemKey      String // "cable_10mm", "cable_6mm", "breaker_box", etc.
+  unit         String   @default("meter")
+  karachiQty   Float    @default(0)
+  lahoreQty    Float    @default(0)
+  // Retained original fields for backward compatibility
+  openingStock Float    @default(0)
+  usedQty      Float    @default(0)
+  restockQty   Float    @default(0)
+  closingStock Float    @default(0)
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([date, itemKey, branch])
+  @@index([monthKey])
+  @@index([date])
+}
+
+model VendorPurchase {
+  branch        String   @default("Karachi")
+  id            String   @id @default(cuid())
+  date          String // "YYYY-MM-DD"
+  monthKey      String // "YYYY-MM"
+  vendorName    String
+  invoiceNo     String   @default("")
+  item          String
+  itemKey       String
+  quantity      Float
+  unitRate      Float
+  totalAmount   Float
+  paymentMethod String   @default("Bank") // "Cash" | "Bank" | "Unpaid"
+  settledDate   String? // Settlement date when payment is made
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([monthKey])
+  @@index([date])
+  @@index([paymentMethod])
+  @@index([branch])
+}
+
+model AppConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+model GeneralExpense {
+  branch        String   @default("Karachi")
+  id            String   @id @default(cuid())
+  date          String // "YYYY-MM-DD"
+  monthKey      String // "YYYY-MM"
+  category      String // Free-text, e.g. "Office Rent", "Stationery", "Generator Fuel", "Tea & Refreshments"
+  amount        Float
+  paymentMethod String   @default("Cash") // "Cash" | "Bank"
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([monthKey])
+  @@index([date])
+  @@index([paymentMethod])
+  @@index([category])
+}
+
+model Employee {
+  branch                String          @default("Karachi")
+  id                    String          @id @default(cuid())
+  name                  String
+  designation           String // e.g. Installer, Supervisor, Manager, Lead Electrician
+  baseSalary            Float           @default(0) // Monthly Base Salary (PKR)
+  defaultFuelAllocation Float           @default(0) // Default Monthly Fuel Allocation (PKR)
+  contactNo             String?
+  dateOfJoining         String? // "YYYY-MM-DD"
+  active                Boolean         @default(true)
+  notes                 String?
+  advances              SalaryAdvance[]
+  payrollRecords        PayrollRecord[]
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+}
+
+model SalaryAdvance {
+  branch         String   @default("Karachi")
+  id             String   @id @default(cuid())
+  employeeId     String
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date           String // "YYYY-MM-DD"
+  monthKey       String // "YYYY-MM"
+  amount         Float // Advance Amount (PKR)
+  paymentMethod  String   @default("Cash") // "Cash" | "Bank"
+  deductedAmount Float    @default(0)
+  status         String   @default("Active") // "Active" | "Settled"
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([monthKey])
+  @@index([date])
+}
+
+model PayrollRecord {
+  branch                String   @default("Karachi")
+  id                    String   @id @default(cuid())
+  employeeId            String
+  employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date                  String // "YYYY-MM-DD"
+  monthKey              String // "YYYY-MM"
+  baseSalary            Float    @default(0) // Base Salary (or partial payout entered)
+  overtimeAmount        Float    @default(0) // Overtime Amount (PKR)
+  foodIncentive         Float    @default(0) // Food Incentive Amount (PKR)
+  fuelIncentive         Float    @default(0) // Fuel Incentive Amount (PKR)
+  installationIncentive Float    @default(0) // Installation Incentive Amount (PKR)
+  totalGrossEarnings    Float    @default(0) // Base Salary + Overtime + Food + Fuel + Installation
+  advanceDeduction      Float    @default(0) // Advance Salary Deduction
+  netPayable            Float    @default(0) // Total Gross Earnings - Advance Salary Deduction
+  paymentMethod         String   @default("Bank") // "Cash" | "Bank"
+  notes                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([monthKey])
+  @@index([date])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  role         String   @default("viewer") // "admin" | "viewer"
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
