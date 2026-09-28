@@ -2,6 +2,9 @@
 const nextConfig = {
   basePath: '/erp',
   reactStrictMode: true,
+  experimental: {
+    instrumentationHook: true,
+  },
   eslint: {
     ignoreDuringBuilds: true,
   },
