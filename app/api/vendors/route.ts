@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { syncAllInventory, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels } from '@/lib/inventory'
+import { syncInventoryDateAndCascade, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -110,26 +110,31 @@ export async function POST(request: NextRequest) {
     const itemKey = norm.key
     const itemName = rawMaterial || norm.name
 
-    const purchase = await prisma.vendorPurchase.create({
-      data: {
-        branch,
-        date,
-        monthKey,
-        vendorName: body.vendorName || 'General Supplier',
-        invoiceNo: body.invoiceNo || body.referenceId || '',
-        item: itemName,
-        itemKey,
-        quantity,
-        unitRate,
-        totalAmount,
-        paymentMethod,
-        settledDate,
-        notes: body.notes || (body.ledgerNotes ? String(body.ledgerNotes) : ''),
-      },
-    })
+    const purchase = await prisma.$transaction(async (tx) => {
+      // 1. Create the VendorPurchase record
+      const created = await tx.vendorPurchase.create({
+        data: {
+          branch,
+          date,
+          monthKey,
+          vendorName: body.vendorName || 'General Supplier',
+          invoiceNo: body.invoiceNo || body.referenceId || '',
+          item: itemName,
+          itemKey,
+          quantity,
+          unitRate,
+          totalAmount,
+          paymentMethod,
+          settledDate,
+          notes: body.notes || (body.ledgerNotes ? String(body.ledgerNotes) : ''),
+        },
+      })
 
-    // Automatically sync full warehouse inventory ledger and balance cascades immediately
-    await syncAllInventory(branch)
+      // 2. Synchronize inventory ledger movement cleanly without SQLite ON CONFLICT errors
+      await syncInventoryDateAndCascade(date, itemKey, branch, tx)
+
+      return created
+    })
 
     // Fetch immediate live stock levels for the response
     const currentStock = await getCurrentStockLevels(branch)
@@ -180,27 +185,39 @@ export async function PUT(request: NextRequest) {
     const itemKey = norm.key
     const itemName = rawMaterial || norm.name
 
-    const updated = await prisma.vendorPurchase.update({
-      where: { id },
-      data: {
-        branch,
-        date: newDate,
-        monthKey: newMonthKey,
-        vendorName: body.vendorName !== undefined ? body.vendorName : existing.vendorName,
-        invoiceNo: body.invoiceNo !== undefined ? body.invoiceNo : existing.invoiceNo,
-        item: itemName,
-        itemKey,
-        quantity,
-        unitRate,
-        totalAmount,
-        paymentMethod,
-        settledDate,
-        notes: body.notes !== undefined ? body.notes : existing.notes,
-      },
-    })
+    const oldDate = existing.date
+    const oldItemKey = existing.itemKey
+    const oldBranch = existing.branch
 
-    // Re-sync full inventory across all impacted dates and branches
-    await syncAllInventory()
+    const updated = await prisma.$transaction(async (tx) => {
+      const up = await tx.vendorPurchase.update({
+        where: { id },
+        data: {
+          branch,
+          date: newDate,
+          monthKey: newMonthKey,
+          vendorName: body.vendorName !== undefined ? body.vendorName : existing.vendorName,
+          invoiceNo: body.invoiceNo !== undefined ? body.invoiceNo : existing.invoiceNo,
+          item: itemName,
+          itemKey,
+          quantity,
+          unitRate,
+          totalAmount,
+          paymentMethod,
+          settledDate,
+          notes: body.notes !== undefined ? body.notes : existing.notes,
+        },
+      })
+
+      // Sync old date/item/branch if date, item, or branch changed
+      if (oldDate !== newDate || oldItemKey !== itemKey || oldBranch !== branch) {
+        await syncInventoryDateAndCascade(oldDate, oldItemKey, oldBranch, tx)
+      }
+      // Sync new date/item/branch
+      await syncInventoryDateAndCascade(newDate, itemKey, branch, tx)
+
+      return up
+    })
 
     return NextResponse.json({ success: true, data: updated })
   } catch (error: any) {
@@ -222,10 +239,12 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Purchase not found' }, { status: 404 })
     }
 
-    await prisma.vendorPurchase.delete({ where: { id } })
+    const { date, branch, itemKey } = purchase
 
-    // Re-sync full inventory so stock levels and ledger rows update immediately
-    await syncAllInventory()
+    await prisma.$transaction(async (tx) => {
+      await tx.vendorPurchase.delete({ where: { id } })
+      await syncInventoryDateAndCascade(date, itemKey, branch, tx)
+    })
 
     return NextResponse.json({ success: true, message: 'Purchase deleted and inventory ledger updated' })
   } catch (error: any) {

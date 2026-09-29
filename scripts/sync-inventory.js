@@ -13,14 +13,14 @@ const STANDARD_ITEMS = [
 ]
 
 const DEFAULT_OPENING_STOCKS = {
-  cable_16mm: { Karachi: 100, Lahore: 50 },
-  cable_10mm: { Karachi: 500, Lahore: 180 },
-  cable_6mm: { Karachi: 350, Lahore: 180 },
-  breaker_box: { Karachi: 30, Lahore: 10 },
-  earthing_rod: { Karachi: 40, Lahore: 10 },
-  wpb: { Karachi: 45, Lahore: 10 },
-  nin_uvr: { Karachi: 25, Lahore: 10 },
-  rcbo_breaker: { Karachi: 30, Lahore: 10 },
+  cable_16mm: { Karachi: 0, Lahore: 0 },
+  cable_10mm: { Karachi: 0, Lahore: 0 },
+  cable_6mm: { Karachi: 0, Lahore: 0 },
+  breaker_box: { Karachi: 0, Lahore: 0 },
+  earthing_rod: { Karachi: 0, Lahore: 0 },
+  wpb: { Karachi: 0, Lahore: 0 },
+  nin_uvr: { Karachi: 0, Lahore: 0 },
+  rcbo_breaker: { Karachi: 0, Lahore: 0 },
 }
 
 function normalizeInventoryItem(rawInput) {
@@ -202,36 +202,35 @@ async function main() {
           ledgerNotes = 'Stock balance carryover'
         }
 
-        await prisma.inventoryLedger.upsert({
-          where: {
-            date_itemKey_branch: {
-              date: dateStr,
-              itemKey: item.key,
-              branch,
+        if (existingEntry) {
+          await prisma.inventoryLedger.update({
+            where: { id: existingEntry.id },
+            data: {
+              openingStock,
+              usedQty,
+              restockQty,
+              closingStock,
+              monthKey,
+              notes: ledgerNotes,
             },
-          },
-          update: {
-            openingStock,
-            usedQty,
-            restockQty,
-            closingStock,
-            monthKey,
-            notes: ledgerNotes,
-          },
-          create: {
-            date: dateStr,
-            monthKey,
-            itemName: item.name,
-            itemKey: item.key,
-            unit: item.unit,
-            branch,
-            openingStock,
-            usedQty,
-            restockQty,
-            closingStock,
-            notes: ledgerNotes,
-          },
-        })
+          })
+        } else {
+          await prisma.inventoryLedger.create({
+            data: {
+              date: dateStr,
+              monthKey,
+              itemName: item.name,
+              itemKey: item.key,
+              unit: item.unit,
+              branch,
+              openingStock,
+              usedQty,
+              restockQty,
+              closingStock,
+              notes: ledgerNotes,
+            },
+          })
+        }
 
         totalLedgerEntriesUpserted++
       }

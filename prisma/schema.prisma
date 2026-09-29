@@ -153,12 +153,14 @@ model InventoryLedger {
   restockQty   Float    @default(0)
   closingStock Float    @default(0)
   notes        String?
+  referenceId  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@unique([date, itemKey, branch])
   @@index([monthKey])
   @@index([date])
+  @@index([referenceId])
 }
 
 model VendorPurchase {

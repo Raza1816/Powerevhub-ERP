@@ -67,7 +67,7 @@ export function SettingsView() {
   const handleResetInventory = async () => {
     if (
       !confirm(
-        'Are you sure you want to clear all records from the Warehouse Inventory Ledger? This will delete all daily inventory log records.'
+        'Are you sure you want to reset the Warehouse Inventory Ledger? This will delete all stock movement records and reset all warehouse card balances (opening stock, available stock, Karachi & Lahore stocks) to 0.'
       )
     ) {
       return
@@ -80,7 +80,7 @@ export function SettingsView() {
       if (data.success) {
         toast.success(
           'Inventory Ledger Reset',
-          data.message || 'All warehouse inventory ledger records have been cleared.'
+          data.message || 'All warehouse movement records have been cleared and all card balances reset to 0.'
         )
         triggerRefresh()
       } else {

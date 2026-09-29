@@ -41,6 +41,29 @@ export function InventoryLedgerView() {
     selectedBranch === 'Lahore' ? 'Lahore' : 'Karachi'
   )
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  const handleSyncLedger = async () => {
+    try {
+      setIsSyncing(true)
+      const res = await fetch('/api/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync', branch: selectedBranch }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast.success('Inventory Synchronized', 'Warehouse inventory ledger synchronized with purchases and jobs.')
+        fetchInventory()
+      } else {
+        toast.error('Sync Failed', data.error)
+      }
+    } catch (err: any) {
+      toast.error('Network Error', err.message)
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   const fetchInventory = () => {
     setLoading(true)
@@ -238,6 +261,18 @@ export function InventoryLedgerView() {
                 <option key={i.key} value={i.key}>{i.name}</option>
               ))}
             </select>
+
+            {!isArchived && !isViewer && (
+              <button
+                onClick={handleSyncLedger}
+                disabled={isSyncing}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold disabled:opacity-50 transition-all"
+                title="Synchronize inventory with all vendor purchases and CRM jobs"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing...' : 'Sync Ledger'}</span>
+              </button>
+            )}
 
             <button
               onClick={fetchInventory}

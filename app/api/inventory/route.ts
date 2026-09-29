@@ -13,16 +13,8 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get('branch') || 'All'
     const forceSync = searchParams.get('sync') === 'true'
 
-    // Check if ledger is empty or out of sync for this month
-    const existingCount = await prisma.inventoryLedger.count({
-      where: { monthKey: month },
-    })
-
-    const monthPurchasesCount = await prisma.vendorPurchase.count({
-      where: { monthKey: month },
-    })
-
-    if (forceSync || (existingCount === 0 && monthPurchasesCount > 0)) {
+    // Only trigger full sync when explicitly requested (?sync=true)
+    if (forceSync) {
       await syncAllInventory()
     }
 
