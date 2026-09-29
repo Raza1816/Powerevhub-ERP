@@ -21,6 +21,17 @@ import {
 } from 'lucide-react'
 import { formatDateDisplay, formatMonthLabel, getTodayDateString } from '@/lib/dateUtils'
 
+export const STANDARD_MASTER_MATERIALS = [
+  { key: 'cable_16mm', name: '16mm 4-Core Copper Cable', unit: 'meter', category: 'Cables', lowStockThreshold: 100 },
+  { key: 'cable_10mm', name: '10mm Cable', unit: 'meter', category: 'Cables', lowStockThreshold: 150 },
+  { key: 'cable_6mm', name: '6mm Cable', unit: 'meter', category: 'Cables', lowStockThreshold: 200 },
+  { key: 'breaker_box', name: 'DB Box (Breaker Box)', unit: 'unit', category: 'Hardware', lowStockThreshold: 10 },
+  { key: 'earthing_rod', name: 'Earthing Rod', unit: 'unit', category: 'Hardware', lowStockThreshold: 15 },
+  { key: 'wpb', name: 'WPB (Waterproof Box)', unit: 'unit', category: 'Hardware', lowStockThreshold: 15 },
+  { key: 'nin_uvr', name: 'NIN UVR (Voltage Relay)', unit: 'unit', category: 'Electrical', lowStockThreshold: 10 },
+  { key: 'rcbo_breaker', name: 'RCBO Breaker', unit: 'unit', category: 'Electrical', lowStockThreshold: 12 },
+]
+
 export function InventoryLedgerView() {
   const { selectedMonth, isArchived, refreshKey, triggerRefresh } = useApp()
   const { selectedBranch } = useBranch()
@@ -43,10 +54,14 @@ export function InventoryLedgerView() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
 
+  const getApiBase = () => {
+    return typeof window !== 'undefined' && window.location.pathname.startsWith('/erp') ? '/erp' : ''
+  }
+
   const handleSyncLedger = async () => {
     try {
       setIsSyncing(true)
-      const res = await fetch('/api/inventory', {
+      const res = await fetch(`${getApiBase()}/api/inventory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'sync', branch: selectedBranch }),
@@ -67,7 +82,7 @@ export function InventoryLedgerView() {
 
   const fetchInventory = () => {
     setLoading(true)
-    let url = `/api/inventory?month=${selectedMonth}&branch=${encodeURIComponent(selectedBranch)}`
+    let url = `${getApiBase()}/api/inventory?month=${selectedMonth}&branch=${encodeURIComponent(selectedBranch)}`
     if (itemFilter !== 'ALL') url += `&itemKey=${encodeURIComponent(itemFilter)}`
 
     fetch(url)
@@ -102,7 +117,7 @@ export function InventoryLedgerView() {
     e.preventDefault()
     try {
       setIsSubmitting(true)
-      const res = await fetch('/api/inventory', {
+      const res = await fetch(`${getApiBase()}/api/inventory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -133,9 +148,43 @@ export function InventoryLedgerView() {
     }
   }
 
-  const currentStock = inventoryData?.currentStock || []
   const ledger = inventoryData?.ledger || []
-  const items = inventoryData?.items || []
+  const items = inventoryData?.items && inventoryData.items.length > 0 ? inventoryData.items : STANDARD_MASTER_MATERIALS
+
+  // Build balanceCards from STANDARD_MASTER_MATERIALS ensuring all 8 cards always render
+  const activeStockMap = new Map((inventoryData?.currentStock || []).map((s: any) => [s.key, s]))
+  const balanceCards = STANDARD_MASTER_MATERIALS.map((master) => {
+    const live = activeStockMap.get(master.key) as any
+    if (live) {
+      const currentQty = Number(live.currentStock) || 0
+      const threshold = selectedBranch === 'All'
+        ? master.lowStockThreshold
+        : Math.round(master.lowStockThreshold / 2)
+      return {
+        ...master,
+        ...live,
+        currentStock: currentQty,
+        karachiStock: Number(live.karachiStock) || 0,
+        lahoreStock: Number(live.lahoreStock) || 0,
+        openingStock: Number(live.openingStock) || 0,
+        totalRestocked: Number(live.totalRestocked) || 0,
+        totalCrmUsed: Number(live.totalCrmUsed) || 0,
+        isLowStock: currentQty <= threshold,
+      }
+    }
+    return {
+      ...master,
+      currentStock: 0,
+      karachiStock: 0,
+      lahoreStock: 0,
+      openingStock: 0,
+      totalRestocked: 0,
+      totalCrmUsed: 0,
+      branch: selectedBranch,
+      lastUpdatedDate: 'N/A',
+      isLowStock: true,
+    }
+  })
 
   return (
     <div className="space-y-6 pb-12">
@@ -190,7 +239,7 @@ export function InventoryLedgerView() {
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {currentStock.map((item: any) => {
+          {balanceCards.map((item: any) => {
             const isLow = item.isLowStock
             return (
               <div

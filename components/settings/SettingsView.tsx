@@ -75,7 +75,8 @@ export function SettingsView() {
 
     try {
       setIsResettingInventory(true)
-      const res = await fetch('/api/inventory/clear', { method: 'POST' })
+      const base = typeof window !== 'undefined' && window.location.pathname.startsWith('/erp') ? '/erp' : ''
+      const res = await fetch(`${base}/api/inventory/clear`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         toast.success(

@@ -3,7 +3,7 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import bcrypt from 'bcryptjs'
 import { prisma, getResolvedDatabaseUrl } from './prisma'
-import { syncAllInventory } from './inventory'
+import { syncAllInventory, ensureMasterMaterialsExist } from './inventory'
 
 let isInitialized = false
 
@@ -71,7 +71,15 @@ export async function initDatabase() {
     // Step 4: Seed default unit rates and dropdowns if empty
     await seedDefaults()
 
-    // Step 5: Automatically sync warehouse inventory with all vendor purchases and CRM jobs
+    // Step 5: Ensure all 8 master material definitions exist with baseline 0 balances
+    try {
+      await ensureMasterMaterialsExist()
+      console.log('[Startup Init] ✓ All 8 master material definitions verified and seeded.')
+    } catch (matErr: any) {
+      console.warn('[Startup Init] Master materials verification notice:', matErr.message)
+    }
+
+    // Step 6: Automatically sync warehouse inventory with all vendor purchases and CRM jobs
     try {
       await syncAllInventory()
       console.log('[Startup Init] ✓ Warehouse inventory ledger synchronized with vendor purchases.')

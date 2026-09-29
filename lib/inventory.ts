@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { getMonthKeyFromDate } from './dateUtils'
+import { getMonthKeyFromDate, getCurrentActiveMonth } from './dateUtils'
 
 export interface InventoryItemDefinition {
   key: string
@@ -540,6 +540,141 @@ export async function getCurrentStockLevels(branch: string = 'All') {
   }
 
   return results
+}
+
+/**
+ * Ensures that all 8 standard master material definitions exist in the database for both
+ * Karachi and Lahore branches with at least baseline records (0 balances).
+ * Also ensures DropdownValue (category: INVENTORY_ITEM) and UnitRate records exist.
+ */
+export async function ensureMasterMaterialsExist(targetMonth?: string) {
+  const activeMonth = targetMonth || getCurrentActiveMonth()
+  const firstDayDate = `${activeMonth}-01`
+  const branches = ['Karachi', 'Lahore']
+
+  // 1. Ensure baseline records exist in InventoryLedger for all 8 items and both branches
+  for (const branch of branches) {
+    for (const item of STANDARD_INVENTORY_ITEMS) {
+      const existing = await prisma.inventoryLedger.findFirst({
+        where: {
+          itemKey: item.key,
+          branch,
+          monthKey: activeMonth,
+        },
+      })
+
+      if (!existing) {
+        await prisma.inventoryLedger.create({
+          data: {
+            date: firstDayDate,
+            monthKey: activeMonth,
+            itemName: item.name,
+            itemKey: item.key,
+            unit: item.unit,
+            branch,
+            openingStock: 0,
+            usedQty: 0,
+            restockQty: 0,
+            closingStock: 0,
+            karachiQty: 0,
+            lahoreQty: 0,
+            notes: `Master material baseline (${branch})`,
+          },
+        })
+      }
+    }
+  }
+
+  // 2. Ensure DropdownValue entries exist for category INVENTORY_ITEM
+  for (let i = 0; i < STANDARD_INVENTORY_ITEMS.length; i++) {
+    const item = STANDARD_INVENTORY_ITEMS[i]
+    const existingDropdown = await prisma.dropdownValue.findFirst({
+      where: { category: 'INVENTORY_ITEM', value: item.name },
+    })
+    if (!existingDropdown) {
+      await prisma.dropdownValue.create({
+        data: {
+          category: 'INVENTORY_ITEM',
+          value: item.name,
+          sortOrder: i + 1,
+          active: true,
+        },
+      })
+    }
+  }
+
+  // 3. Ensure UnitRate entries exist for all 8 items
+  const defaultRates: Record<string, number> = {
+    cable_16mm: 350,
+    cable_10mm: 250,
+    cable_6mm: 180,
+    breaker_box: 4500,
+    earthing_rod: 3500,
+    wpb: 1500,
+    nin_uvr: 3800,
+    rcbo_breaker: 3200,
+  }
+
+  for (const item of STANDARD_INVENTORY_ITEMS) {
+    const existingRate = await prisma.unitRate.findUnique({
+      where: { itemKey: item.key },
+    })
+    if (!existingRate) {
+      await prisma.unitRate.create({
+        data: {
+          itemKey: item.key,
+          itemName: item.name,
+          rate: defaultRates[item.key] || 100,
+          unit: item.unit,
+          active: true,
+        },
+      })
+    }
+  }
+}
+
+/**
+ * Wipes transaction movement records and resets all 8 standard master materials
+ * to strictly 0 balances (openingStock: 0, usedQty: 0, restockQty: 0, closingStock: 0, karachiStock: 0, lahoreStock: 0)
+ * for both Karachi and Lahore branches. Never leaves master materials missing.
+ */
+export async function resetInventoryToZero(targetMonth?: string) {
+  const activeMonth = targetMonth || getCurrentActiveMonth()
+  const firstDayDate = `${activeMonth}-01`
+  const branches = ['Karachi', 'Lahore']
+
+  // 1. Wipe all existing records in InventoryLedger
+  const deleteResult = await prisma.inventoryLedger.deleteMany({})
+
+  // 2. Immediately re-insert all 8 master material items with strictly 0 balances
+  for (const branch of branches) {
+    for (const item of STANDARD_INVENTORY_ITEMS) {
+      await prisma.inventoryLedger.create({
+        data: {
+          date: firstDayDate,
+          monthKey: activeMonth,
+          itemName: item.name,
+          itemKey: item.key,
+          unit: item.unit,
+          branch,
+          openingStock: 0,
+          usedQty: 0,
+          restockQty: 0,
+          closingStock: 0,
+          karachiQty: 0,
+          lahoreQty: 0,
+          notes: `Opening inventory baseline (${branch} - Reset to 0)`,
+        },
+      })
+    }
+  }
+
+  // 3. Ensure Dropdown and UnitRate masters remain fully intact
+  await ensureMasterMaterialsExist(activeMonth)
+
+  // 4. Return the freshly zeroed current stock levels
+  const currentStock = await getCurrentStockLevels('All')
+  return { count: deleteResult.count, currentStock }
 }
 
 

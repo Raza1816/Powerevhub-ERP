@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, syncAllInventory, syncInventoryForDate } from '@/lib/inventory'
+import { STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, syncAllInventory, syncInventoryForDate, ensureMasterMaterialsExist } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,6 +12,9 @@ export async function GET(request: NextRequest) {
     const itemKey = searchParams.get('itemKey')
     const branch = searchParams.get('branch') || 'All'
     const forceSync = searchParams.get('sync') === 'true'
+
+    // Automatically ensure all 8 standard master materials exist in the database with initial 0 balances
+    await ensureMasterMaterialsExist(month)
 
     // Only trigger full sync when explicitly requested (?sync=true)
     if (forceSync) {

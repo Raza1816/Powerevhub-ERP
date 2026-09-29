@@ -1,20 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { getCurrentStockLevels } from '@/lib/inventory'
+import { resetInventoryToZero } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: NextRequest) {
   try {
-    const result = await prisma.inventoryLedger.deleteMany({})
-
-    // Dynamic stock levels after clearing: all balances are strictly 0
-    const currentStock = await getCurrentStockLevels('All')
+    const { count, currentStock } = await resetInventoryToZero()
 
     return NextResponse.json({
       success: true,
-      message: `Warehouse inventory ledger reset successfully. All ${result.count} movement records have been cleared, and all warehouse card balances (opening stock, available stock, Karachi & Lahore stocks) have been set to 0.`,
-      count: result.count,
+      message: `Warehouse inventory ledger reset successfully. All movement records have been cleared, and all 8 warehouse master material card balances (opening stock, available stock, Karachi & Lahore stocks) have been set to 0.`,
+      count,
       currentStock,
     })
   } catch (error: any) {
