@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { syncInventoryForDate, STANDARD_INVENTORY_ITEMS } from '@/lib/inventory'
+import { syncAllInventory, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -103,16 +103,12 @@ export async function POST(request: NextRequest) {
     const paymentMethod = body.paymentMethod || 'Bank'
     const settledDate = paymentMethod === 'Unpaid' ? null : (body.settledDate || date)
 
-    // Auto-detect matching standard itemKey if possible
-    let itemKey = body.itemKey || ''
-    const itemName = body.item || ''
-
-    if (!itemKey) {
-      const match = STANDARD_INVENTORY_ITEMS.find(
-        (i) => i.name.toLowerCase() === itemName.toLowerCase() || itemName.toLowerCase().includes(i.name.toLowerCase())
-      )
-      itemKey = match ? match.key : itemName.toLowerCase().replace(/\s+/g, '_')
-    }
+    // Normalize raw material input cleanly
+    const rawMaterial = body.materialItem || body.item || ''
+    const rawKey = body.itemKey || ''
+    const norm = normalizeInventoryItem(rawKey || rawMaterial)
+    const itemKey = norm.key
+    const itemName = rawMaterial || norm.name
 
     const purchase = await prisma.vendorPurchase.create({
       data: {
@@ -120,7 +116,7 @@ export async function POST(request: NextRequest) {
         date,
         monthKey,
         vendorName: body.vendorName || 'General Supplier',
-        invoiceNo: body.invoiceNo || '',
+        invoiceNo: body.invoiceNo || body.referenceId || '',
         item: itemName,
         itemKey,
         quantity,
@@ -128,14 +124,22 @@ export async function POST(request: NextRequest) {
         totalAmount,
         paymentMethod,
         settledDate,
-        notes: body.notes || '',
+        notes: body.notes || (body.ledgerNotes ? String(body.ledgerNotes) : ''),
       },
     })
 
-    // Automatically sync warehouse inventory restock for this date (Immediate restock even if Unpaid)
-    await syncInventoryForDate(date)
+    // Automatically sync full warehouse inventory ledger and balance cascades immediately
+    await syncAllInventory(branch)
 
-    return NextResponse.json({ success: true, data: purchase }, { status: 201 })
+    // Fetch immediate live stock levels for the response
+    const currentStock = await getCurrentStockLevels(branch)
+
+    return NextResponse.json({
+      success: true,
+      data: purchase,
+      currentStock,
+      message: `Purchase recorded and ${quantity} ${norm.unit}s restocked to ${branch} warehouse inventory.`,
+    }, { status: 201 })
   } catch (error: any) {
     console.error('Error creating vendor purchase:', error)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
@@ -170,19 +174,11 @@ export async function PUT(request: NextRequest) {
       settledDate = newDate
     }
 
-    let itemKey = body.itemKey || existing.itemKey
-    const itemName = body.item || existing.item
-    if (body.item && !body.itemKey) {
-      const match = STANDARD_INVENTORY_ITEMS.find(
-        (i) => i.name.toLowerCase() === itemName.toLowerCase() || itemName.toLowerCase().includes(i.name.toLowerCase())
-      )
-      itemKey = match ? match.key : itemName.toLowerCase().replace(/\s+/g, '_')
-    }
-
-    const oldDate = existing.date
-    const oldQty = existing.quantity
-    const oldItemKey = existing.itemKey
-    const oldBranch = existing.branch
+    const rawMaterial = body.materialItem || body.item || existing.item
+    const rawKey = body.itemKey || existing.itemKey
+    const norm = normalizeInventoryItem(rawKey || rawMaterial)
+    const itemKey = norm.key
+    const itemName = rawMaterial || norm.name
 
     const updated = await prisma.vendorPurchase.update({
       where: { id },
@@ -203,13 +199,8 @@ export async function PUT(request: NextRequest) {
       },
     })
 
-    // Re-sync inventory if date, quantity, itemKey, or branch changed
-    if (oldDate !== newDate || oldQty !== quantity || oldItemKey !== itemKey || oldBranch !== branch) {
-      await syncInventoryForDate(oldDate)
-      if (oldDate !== newDate) {
-        await syncInventoryForDate(newDate)
-      }
-    }
+    // Re-sync full inventory across all impacted dates and branches
+    await syncAllInventory()
 
     return NextResponse.json({ success: true, data: updated })
   } catch (error: any) {
@@ -231,13 +222,12 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Purchase not found' }, { status: 404 })
     }
 
-    const purchaseDate = purchase.date
     await prisma.vendorPurchase.delete({ where: { id } })
 
-    // Re-sync inventory
-    await syncInventoryForDate(purchaseDate)
+    // Re-sync full inventory so stock levels and ledger rows update immediately
+    await syncAllInventory()
 
-    return NextResponse.json({ success: true, message: 'Purchase deleted and inventory updated' })
+    return NextResponse.json({ success: true, message: 'Purchase deleted and inventory ledger updated' })
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }

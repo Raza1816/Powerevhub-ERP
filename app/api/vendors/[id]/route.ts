@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getMonthKeyFromDate } from '@/lib/dateUtils'
-import { syncInventoryForDate, STANDARD_INVENTORY_ITEMS } from '@/lib/inventory'
+import { syncAllInventory, normalizeInventoryItem } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,19 +49,11 @@ export async function PUT(
       settledDate = newDate
     }
 
-    let itemKey = body.itemKey || existing.itemKey
-    const itemName = body.item || existing.item
-    if (body.item && !body.itemKey) {
-      const match = STANDARD_INVENTORY_ITEMS.find(
-        (i) => i.name.toLowerCase() === itemName.toLowerCase() || itemName.toLowerCase().includes(i.name.toLowerCase())
-      )
-      itemKey = match ? match.key : itemName.toLowerCase().replace(/\s+/g, '_')
-    }
-
-    const oldDate = existing.date
-    const oldQty = existing.quantity
-    const oldItemKey = existing.itemKey
-    const oldBranch = existing.branch
+    const rawMaterial = body.materialItem || body.item || existing.item
+    const rawKey = body.itemKey || existing.itemKey
+    const norm = normalizeInventoryItem(rawKey || rawMaterial)
+    const itemKey = norm.key
+    const itemName = rawMaterial || norm.name
 
     const updated = await prisma.vendorPurchase.update({
       where: { id },
@@ -82,13 +74,8 @@ export async function PUT(
       },
     })
 
-    // Re-sync inventory if date, quantity, itemKey, or branch changed
-    if (oldDate !== newDate || oldQty !== quantity || oldItemKey !== itemKey || oldBranch !== branch) {
-      await syncInventoryForDate(oldDate)
-      if (oldDate !== newDate) {
-        await syncInventoryForDate(newDate)
-      }
-    }
+    // Re-sync full inventory so changes cascade to all subsequent dates
+    await syncAllInventory()
 
     return NextResponse.json({ success: true, data: updated })
   } catch (error: any) {
@@ -108,11 +95,10 @@ export async function DELETE(
       return NextResponse.json({ success: false, error: 'Purchase not found' }, { status: 404 })
     }
 
-    const purchaseDate = purchase.date
     await prisma.vendorPurchase.delete({ where: { id } })
 
-    // Re-sync inventory
-    await syncInventoryForDate(purchaseDate)
+    // Re-sync full inventory so stock levels and ledger rows update immediately
+    await syncAllInventory()
 
     return NextResponse.json({ success: true, message: 'Purchase deleted and inventory updated' })
   } catch (error: any) {

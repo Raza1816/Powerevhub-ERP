@@ -11,7 +11,8 @@
     "db:push": "prisma db push",
     "db:seed": "node scripts/seed.js",
     "inventory:clear": "node scripts/clear-inventory.js",
-    "inventory:seed": "node scripts/seed-inventory.js"
+    "inventory:seed": "node scripts/seed-inventory.js",
+    "inventory:sync": "node scripts/sync-inventory.js"
   },
   "dependencies": {
     "@prisma/client": "^5.21.1",

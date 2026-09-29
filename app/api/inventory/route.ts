@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, syncInventoryForDate } from '@/lib/inventory'
+import { STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, syncAllInventory, syncInventoryForDate } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +11,20 @@ export async function GET(request: NextRequest) {
     const month = searchParams.get('month') || getCurrentActiveMonth()
     const itemKey = searchParams.get('itemKey')
     const branch = searchParams.get('branch') || 'All'
+    const forceSync = searchParams.get('sync') === 'true'
+
+    // Check if ledger is empty or out of sync for this month
+    const existingCount = await prisma.inventoryLedger.count({
+      where: { monthKey: month },
+    })
+
+    const monthPurchasesCount = await prisma.vendorPurchase.count({
+      where: { monthKey: month },
+    })
+
+    if (forceSync || (existingCount === 0 && monthPurchasesCount > 0)) {
+      await syncAllInventory()
+    }
 
     // 1. Current real-time warehouse stock levels
     const currentStock = await getCurrentStockLevels(branch)
@@ -19,6 +33,9 @@ export async function GET(request: NextRequest) {
     const where: any = { monthKey: month }
     if (itemKey && itemKey !== 'ALL') {
       where.itemKey = itemKey
+    }
+    if (branch && branch !== 'All') {
+      where.branch = branch
     }
 
     const ledger = await prisma.inventoryLedger.findMany({
@@ -41,12 +58,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       month,
+      branch,
       items: STANDARD_INVENTORY_ITEMS,
       currentStock,
       ledger,
       monthSummary: {
-        monthTotalUsed,
-        monthTotalRestocked,
+        monthTotalUsed: Math.round(monthTotalUsed * 100) / 100,
+        monthTotalRestocked: Math.round(monthTotalRestocked * 100) / 100,
         recordCount: ledger.length,
       },
     })
@@ -59,6 +77,18 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
+
+    // Handle full re-sync action
+    if (body.action === 'sync') {
+      await syncAllInventory(body.branch)
+      const currentStock = await getCurrentStockLevels(body.branch || 'All')
+      return NextResponse.json({
+        success: true,
+        message: 'Warehouse inventory synchronized successfully',
+        currentStock,
+      })
+    }
+
     const { date, itemKey, openingStock, notes, branch, transactionType } = body
 
     if (!date || !itemKey) {
@@ -81,6 +111,7 @@ export async function POST(request: NextRequest) {
     const usedQty = existing ? existing.usedQty : 0
     const restockQty = existing ? existing.restockQty : 0
     const closingStock = Math.round((opening + restockQty - usedQty) * 100) / 100
+    const resolvedNotes = notes !== undefined ? notes : (existing?.notes || `Opening stock set for ${resolvedBranch} warehouse`)
 
     let entry
     if (existing) {
@@ -90,7 +121,7 @@ export async function POST(request: NextRequest) {
           openingStock: opening,
           closingStock,
           branch: resolvedBranch,
-          notes: notes !== undefined ? notes : existing.notes,
+          notes: resolvedNotes,
         },
       })
     } else {
@@ -106,13 +137,13 @@ export async function POST(request: NextRequest) {
           usedQty,
           restockQty,
           closingStock,
-          notes: notes || `${transactionType || 'OPENING_STOCK'} — ${resolvedBranch} warehouse`,
+          notes: resolvedNotes,
         },
       })
     }
 
-    // Re-sync full day (updates usedQty from CRM jobs)
-    await syncInventoryForDate(date)
+    // Cascade adjustment forward to all subsequent dates
+    await syncAllInventory(resolvedBranch)
 
     return NextResponse.json({ success: true, data: entry })
   } catch (error: any) {
@@ -120,4 +151,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
 }
+
 
