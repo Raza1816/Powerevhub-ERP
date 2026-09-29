@@ -35,35 +35,40 @@ export async function initDatabase() {
       userTableExists = false
     }
 
-    // Step 2: If tables are missing or not in sync, execute schema push / creation
-    if (!userTableExists) {
-      console.log('[Startup Init] Tables missing. Synchronizing database schema...')
+    // Step 2: Always ensure database schema and columns are synchronized
+    let pushSucceeded = false
+    try {
+      const prismaBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'prisma')
+      const cmd = fs.existsSync(prismaBin)
+        ? `"${prismaBin}" db push --schema="${schemaPath}" --accept-data-loss --skip-generate`
+        : `npx prisma db push --schema="${schemaPath}" --accept-data-loss --skip-generate`
 
-      let pushSucceeded = false
-      try {
-        const prismaBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'prisma')
-        const cmd = fs.existsSync(prismaBin)
-          ? `"${prismaBin}" db push --schema="${schemaPath}" --accept-data-loss --skip-generate`
-          : `npx prisma db push --schema="${schemaPath}" --accept-data-loss --skip-generate`
-
-        execSync(cmd, {
-          cwd: process.cwd(),
-          env: { ...process.env, DATABASE_URL: dbUrl },
-          stdio: 'pipe',
-        })
-        pushSucceeded = true
-        console.log('[Startup Init] ✓ Schema successfully pushed via Prisma CLI.')
-      } catch (cliErr: any) {
-        console.warn('[Startup Init] Prisma CLI push unavailable or failed, applying raw DDL fallback:', cliErr?.message || cliErr)
-      }
-
-      // If push didn't succeed, create tables directly with raw SQL
-      if (!pushSucceeded) {
-        await applyRawDdl()
-      }
-    } else {
-      console.log('[Startup Init] ✓ Database tables already present.')
+      execSync(cmd, {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_URL: dbUrl },
+        stdio: 'pipe',
+      })
+      pushSucceeded = true
+      console.log('[Startup Init] ✓ Schema successfully pushed via Prisma CLI.')
+    } catch (cliErr: any) {
+      console.warn('[Startup Init] Prisma CLI push unavailable or failed, applying raw DDL fallback:', cliErr?.message || cliErr)
     }
+
+    // If tables are completely missing and CLI push failed, create them with raw SQL
+    if (!userTableExists && !pushSucceeded) {
+      await applyRawDdl()
+    }
+
+    // Always run fallback ALTER TABLE to guarantee referenceId column exists in SQLite
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "referenceId" TEXT;`)
+      console.log('[Startup Init] ✓ Added referenceId column to InventoryLedger.')
+    } catch {
+      // Column already exists, safe to ignore
+    }
+    try {
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_referenceId_idx" ON "InventoryLedger"("referenceId");`)
+    } catch {}
 
     // Step 3: Seed Admin and Viewer users if not present
     await seedStaticUsers()
@@ -186,9 +191,11 @@ async function applyRawDdl() {
       "restockQty" REAL NOT NULL DEFAULT 0,
       "closingStock" REAL NOT NULL DEFAULT 0,
       "notes" TEXT,
+      "referenceId" TEXT,
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     );`,
+    `CREATE INDEX IF NOT EXISTS "InventoryLedger_referenceId_idx" ON "InventoryLedger"("referenceId");`,
     `CREATE TABLE IF NOT EXISTS "PayrollRecord" (
       "branch" TEXT NOT NULL DEFAULT 'Karachi',
       "id" TEXT NOT NULL PRIMARY KEY,

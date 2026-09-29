@@ -92,6 +92,24 @@ export function normalizeInventoryItem(rawInput: string | undefined | null): { k
   return { key: rawInput.replace(/\s+/g, '_').toLowerCase(), name: rawInput, unit: 'unit' }
 }
 
+let columnsVerified = false
+
+export async function ensureInventoryLedgerColumns(clientOrTx?: any) {
+  if (columnsVerified) return
+  const client = clientOrTx || prisma
+  try {
+    await client.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "referenceId" TEXT;`)
+  } catch {
+    // Column already exists in SQLite, safe to ignore
+  }
+  try {
+    await client.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_referenceId_idx" ON "InventoryLedger"("referenceId");`)
+  } catch {
+    // Index already exists, safe to ignore
+  }
+  columnsVerified = true
+}
+
 /**
  * Synchronizes a single date, itemKey, and branch, then cascades closing balances to all subsequent dates.
  * Uses primary-key update/create — completely avoiding SQLite ON CONFLICT clause errors.
@@ -100,9 +118,11 @@ export async function syncInventoryDateAndCascade(
   dateStr: string,
   itemKey: string,
   branch: string,
-  txClient?: any
+  txClient?: any,
+  explicitReferenceId?: string
 ) {
   const client = txClient || prisma
+  await ensureInventoryLedgerColumns(client)
   const monthKey = getMonthKeyFromDate(dateStr)
   const itemDef = STANDARD_INVENTORY_ITEMS.find((i) => i.key === itemKey)
   const itemName = itemDef ? itemDef.name : itemKey
@@ -124,13 +144,13 @@ export async function syncInventoryDateAndCascade(
     where: { date: dateStr, branch },
   })
   let restockQty = 0
-  const vendors: Array<{ vendor: string; qty: number }> = []
+  const vendors: Array<{ vendor: string; qty: number; id: string }> = []
   purchases.forEach((p: any) => {
     const norm = normalizeInventoryItem(p.itemKey || p.item)
     if (norm.key === itemKey) {
       const q = Number(p.quantity) || 0
       restockQty += q
-      vendors.push({ vendor: p.vendorName || 'Vendor', qty: q })
+      vendors.push({ vendor: p.vendorName || 'Vendor', qty: q, id: p.id })
     }
   })
 
@@ -158,6 +178,9 @@ export async function syncInventoryDateAndCascade(
   }
 
   const closingStock = Math.round((openingStock + restockQty - usedQty) * 100) / 100
+
+  // Resolve referenceId from purchase or explicit parameter
+  const resolvedRefId = explicitReferenceId || (vendors.length === 1 ? vendors[0].id : (vendors.length > 1 ? vendors.map((v) => v.id).join(',') : (existing?.referenceId || null)))
 
   // If no activity and zero opening, clean up entry
   if (usedQty === 0 && restockQty === 0 && openingStock === 0 && !isManualAdjustment) {
@@ -192,6 +215,7 @@ export async function syncInventoryDateAndCascade(
           closingStock,
           monthKey,
           notes: ledgerNotes,
+          referenceId: resolvedRefId,
         },
       })
     } else {
@@ -208,6 +232,7 @@ export async function syncInventoryDateAndCascade(
           restockQty,
           closingStock,
           notes: ledgerNotes,
+          referenceId: resolvedRefId,
         },
       })
     }
@@ -427,6 +452,7 @@ export async function syncAllInventory(targetBranch?: string) {
  * If no stock movements exist, all cards STRICTLY display 0 (with Karachi: 0, Lahore: 0).
  */
 export async function getCurrentStockLevels(branch: string = 'All') {
+  await ensureInventoryLedgerColumns()
   const items = STANDARD_INVENTORY_ITEMS
   const results = []
 
@@ -548,6 +574,7 @@ export async function getCurrentStockLevels(branch: string = 'All') {
  * Also ensures DropdownValue (category: INVENTORY_ITEM) and UnitRate records exist.
  */
 export async function ensureMasterMaterialsExist(targetMonth?: string) {
+  await ensureInventoryLedgerColumns()
   const activeMonth = targetMonth || getCurrentActiveMonth()
   const firstDayDate = `${activeMonth}-01`
   const branches = ['Karachi', 'Lahore']
@@ -639,6 +666,7 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
  * for both Karachi and Lahore branches. Never leaves master materials missing.
  */
 export async function resetInventoryToZero(targetMonth?: string) {
+  await ensureInventoryLedgerColumns()
   const activeMonth = targetMonth || getCurrentActiveMonth()
   const firstDayDate = `${activeMonth}-01`
   const branches = ['Karachi', 'Lahore']

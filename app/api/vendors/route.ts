@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { syncInventoryDateAndCascade, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels } from '@/lib/inventory'
+import { syncInventoryDateAndCascade, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, ensureInventoryLedgerColumns } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -130,8 +130,8 @@ export async function POST(request: NextRequest) {
         },
       })
 
-      // 2. Synchronize inventory ledger movement cleanly without SQLite ON CONFLICT errors
-      await syncInventoryDateAndCascade(date, itemKey, branch, tx)
+      // 2. Synchronize inventory ledger movement cleanly with referenceId set to procurement entry's ID
+      await syncInventoryDateAndCascade(date, itemKey, branch, tx, created.id)
 
       return created
     })
