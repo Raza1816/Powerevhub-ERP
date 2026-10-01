@@ -65,7 +65,7 @@ function normalizeInventoryItem(rawInput) {
 }
 
 function getMonthKey(dateStr) {
-  if (!dateStr) return '2026-09'
+  if (!dateStr) return '2026-10'
   return dateStr.substring(0, 7)
 }
 

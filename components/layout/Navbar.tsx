@@ -88,10 +88,13 @@ export function Navbar({ onTabChange, activeTab }: { onTabChange: (tab: string) 
     }
   }
 
-  // Deduplicate and sort month options
+  // Deduplicate, filter pre-October 2026, and sort month options
   const monthOptions = Array.from(
     new Set([activeMonth, selectedMonth, ...availableMonths])
-  ).sort().reverse()
+  )
+    .filter((m) => m >= '2026-10')
+    .sort()
+    .reverse()
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-200 dark:border-slate-800/80 bg-white/85 dark:bg-[#0b0f17]/85 backdrop-blur-xl transition-colors no-print">
@@ -120,16 +123,8 @@ export function Navbar({ onTabChange, activeTab }: { onTabChange: (tab: string) 
           {/* Center Month Selector & Archive Status */}
           <div className="flex items-center gap-2">
             <div className="relative flex items-center">
-              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs sm:text-sm font-medium transition-all shadow-sm ${
-                isArchived
-                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20'
-                  : 'bg-slate-100 dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100'
-              }`}>
-                {isArchived ? (
-                  <Archive className="w-4 h-4 text-amber-500 shrink-0" />
-                ) : (
-                  <Calendar className="w-4 h-4 text-emerald-500 shrink-0" />
-                )}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs sm:text-sm font-medium transition-all shadow-sm bg-slate-100 dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100">
+                <Calendar className="w-4 h-4 text-emerald-500 shrink-0" />
                 
                 <span className="text-slate-500 dark:text-slate-400 text-xs hidden md:inline">Cycle:</span>
                 
@@ -140,10 +135,9 @@ export function Navbar({ onTabChange, activeTab }: { onTabChange: (tab: string) 
                 >
                   {monthOptions.map((m) => {
                     const isMActive = m === activeMonth
-                    const isMArchived = m < activeMonth
                     return (
                       <option key={m} value={m} className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-                        {formatMonthLabel(m)} {isMActive ? '⚡ (Active Current)' : isMArchived ? '🔒 (Archived)' : ''}
+                        {formatMonthLabel(m)} {isMActive ? '⚡ (Active Current)' : '(Historical - Editable)'}
                       </option>
                     )
                   })}
@@ -175,13 +169,14 @@ export function Navbar({ onTabChange, activeTab }: { onTabChange: (tab: string) 
               </div>
             </div>
 
-            {/* If archived, show badge */}
-            {isArchived && (
-              <span className="hidden xl:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30">
-                <Lock className="w-3 h-3" /> Historical Archive (Read-Only)
+            {/* If historical cycle, show badge */}
+            {selectedMonth < activeMonth && (
+              <span className="hidden xl:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                <Calendar className="w-3 h-3" /> Historical Cycle (Editable)
               </span>
             )}
           </div>
+
 
           {/* Right Action Controls */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">

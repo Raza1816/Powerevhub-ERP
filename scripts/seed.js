@@ -7,7 +7,8 @@ async function main() {
   const now = new Date()
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
-  const activeMonth = `${year}-${month}`
+  const currentMonth = `${year}-${month}`
+  const activeMonth = currentMonth < '2026-10' ? '2026-10' : currentMonth
 
   // 1. Ensure Static System Accounts (Admin & Viewer)
   console.log('Checking static authentication accounts...')

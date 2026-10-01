@@ -437,7 +437,7 @@ export async function GET(request: NextRequest) {
         ...distinctExpenseMonths.map((e) => e.monthKey),
         ...distinctPayrollMonths.map((r) => r.monthKey),
       ])
-    ).filter(Boolean)
+    ).filter((m) => m && m >= '2026-10')
 
     return NextResponse.json({
       success: true,

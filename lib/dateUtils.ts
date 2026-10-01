@@ -1,8 +1,11 @@
+export const FOUNDATIONAL_CYCLE = '2026-10'
+
 export function getCurrentActiveMonth(): string {
   const now = new Date()
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
-  return `${year}-${month}`
+  const current = `${year}-${month}`
+  return current < FOUNDATIONAL_CYCLE ? FOUNDATIONAL_CYCLE : current
 }
 
 export function getTodayDateString(): string {
@@ -10,21 +13,30 @@ export function getTodayDateString(): string {
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const day = String(now.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  const current = `${year}-${month}-${day}`
+  return current < `${FOUNDATIONAL_CYCLE}-01` ? `${FOUNDATIONAL_CYCLE}-01` : current
 }
 
 export function getMonthKeyFromDate(dateStr: string): string {
   if (!dateStr) return getCurrentActiveMonth()
   const parts = dateStr.split('-')
   if (parts.length >= 2) {
-    return `${parts[0]}-${parts[1]}`
+    const key = `${parts[0]}-${parts[1]}`
+    return key < FOUNDATIONAL_CYCLE ? FOUNDATIONAL_CYCLE : key
   }
   return getCurrentActiveMonth()
 }
 
-export function isMonthArchived(monthKey: string): boolean {
-  const activeMonth = getCurrentActiveMonth()
-  return monthKey < activeMonth
+/**
+ * Strict read-only mode is disabled across all concluded cycles.
+ * Users with admin role retain full CRUD permissions across historical cycles.
+ */
+export function isMonthArchived(_monthKey: string): boolean {
+  return false
+}
+
+export function isPastCycle(monthKey: string): boolean {
+  return monthKey < getCurrentActiveMonth()
 }
 
 export function formatMonthLabel(monthKey: string): string {
@@ -52,19 +64,25 @@ export function formatDateDisplay(dateStr: string): string {
 
 export function getAvailableMonthOptions(activeMonth: string, extraMonths: string[] = []): { value: string; label: string; isArchived: boolean }[] {
   const set = new Set<string>()
-  set.add(activeMonth)
+  const safeActiveMonth = activeMonth < FOUNDATIONAL_CYCLE ? FOUNDATIONAL_CYCLE : activeMonth
+  set.add(safeActiveMonth)
   
-  // Add previous 6 months and next 2 months
-  const [actYear, actMonth] = activeMonth.split('-').map(Number)
-  for (let i = -6; i <= 2; i++) {
+  // Add upcoming 3 months, only if >= FOUNDATIONAL_CYCLE
+  const [actYear, actMonth] = safeActiveMonth.split('-').map(Number)
+  for (let i = 0; i <= 3; i++) {
     const d = new Date(actYear, actMonth - 1 + i, 1)
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, '0')
-    set.add(`${y}-${m}`)
+    const key = `${y}-${m}`
+    if (key >= FOUNDATIONAL_CYCLE) {
+      set.add(key)
+    }
   }
 
   extraMonths.forEach(m => {
-    if (m && m.match(/^\d{4}-\d{2}$/)) set.add(m)
+    if (m && m.match(/^\d{4}-\d{2}$/) && m >= FOUNDATIONAL_CYCLE) {
+      set.add(m)
+    }
   })
 
   const sorted = Array.from(set).sort().reverse()
@@ -72,6 +90,7 @@ export function getAvailableMonthOptions(activeMonth: string, extraMonths: strin
   return sorted.map(monthKey => ({
     value: monthKey,
     label: formatMonthLabel(monthKey),
-    isArchived: monthKey < activeMonth,
+    isArchived: false,
   }))
 }
+

@@ -582,7 +582,7 @@ export function VoucherClaimsManager() {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. BYD Batch Claim Wire Ref #BYD-2026-09"
+                  placeholder="e.g. BYD Batch Claim Wire Ref #BYD-2026-10"
                   value={settlementNotes}
                   onChange={(e) => setSettlementNotes(e.target.value)}
                   className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-none focus:border-sky-500"

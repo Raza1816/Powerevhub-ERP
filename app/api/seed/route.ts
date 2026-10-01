@@ -8,14 +8,6 @@ import { ensureDefaultUsers } from '@/lib/auth'
 export async function POST(request: NextRequest) {
   try {
     const activeMonth = getCurrentActiveMonth()
-    const [currYear, currMonth] = activeMonth.split('-').map(Number)
-
-    // Calculate previous months for historical archives
-    const prevDate1 = new Date(currYear, currMonth - 2, 1)
-    const prevMonth1 = `${prevDate1.getFullYear()}-${String(prevDate1.getMonth() + 1).padStart(2, '0')}`
-
-    const prevDate2 = new Date(currYear, currMonth - 3, 1)
-    const prevMonth2 = `${prevDate2.getFullYear()}-${String(prevDate2.getMonth() + 1).padStart(2, '0')}`
 
     // 1. Clear existing CRM data if requested or seed clean
     await prisma.crmJob.deleteMany({})
@@ -308,129 +300,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // 5. Seed Archived Month 1 (e.g. Previous Month) with its own Sn starting at 1!
-    const sampleJobsArchived1 = [
-      {
-        sn: 1,
-        date: `${prevMonth1}-04`,
-        clientName: 'Sarmad Bilal',
-        contactNo: '+92 300 1122334',
-        addressArea: 'DHA Phase 6, Lahore',
-        source: 'Direct',
-        technicianName: 'Team Alpha (Lead: Ali)',
-        cable10mmMeter: 20,
-        cable6mmMeter: 0,
-        breakerBoxQty: 1,
-        additionalSupplyCost: 2500,
-        miscExp: 1000,
-        billAmount: 50000,
-        payStatus: 'Paid',
-        paymentMethod: 'Bank Transfer',
-      },
-      {
-        sn: 2,
-        date: `${prevMonth1}-12`,
-        clientName: 'Apex Solar & EV Solutions',
-        contactNo: '+92 321 4455667',
-        addressArea: 'I-9 Industrial Area, Islamabad',
-        source: 'MJD/MTP',
-        technicianName: 'Team Beta (Lead: Imran)',
-        cable10mmMeter: 35,
-        cable6mmMeter: 0,
-        breakerBoxQty: 1,
-        additionalSupplyCost: 5000,
-        miscExp: 1500,
-        billAmount: 82000,
-        payStatus: 'Paid',
-        paymentMethod: 'Cash',
-      },
-      {
-        sn: 3,
-        date: `${prevMonth1}-22`,
-        clientName: 'Dr. Shahzad Afzal',
-        contactNo: '+92 333 7788112',
-        addressArea: 'F-10/3, Islamabad',
-        source: 'Sarah South',
-        technicianName: 'Team Gamma (Lead: Farhan)',
-        cable10mmMeter: 0,
-        cable6mmMeter: 22,
-        breakerBoxQty: 1,
-        additionalSupplyCost: 3000,
-        miscExp: 1100,
-        billAmount: 46000,
-        payStatus: 'Paid',
-        paymentMethod: 'Bank Transfer',
-      },
-    ]
-
-    for (const j of sampleJobsArchived1) {
-      const calc = calculateJobCosts({
-        cable10mmMeter: j.cable10mmMeter,
-        cable10mmUnitCost: 230,
-        cable6mmMeter: j.cable6mmMeter,
-        cable6mmUnitCost: 180,
-        breakerBoxQty: j.breakerBoxQty,
-        breakerBoxUnitCost: 4200,
-        earthingRodQty: 1,
-        earthingRodUnitCost: 3200,
-        wpbQty: 1,
-        wpbUnitCost: 1500,
-        ninUvrQty: 1,
-        ninUvrUnitCost: 3800,
-        rcboBreakerQty: 1,
-        rcboBreakerUnitCost: 3200,
-        additionalSupplyCost: j.additionalSupplyCost,
-        miscExp: j.miscExp,
-        billAmount: j.billAmount,
-      })
-
-      await prisma.crmJob.create({
-        data: {
-          sn: j.sn,
-          date: j.date,
-          monthKey: prevMonth1,
-          clientName: j.clientName,
-          contactNo: j.contactNo,
-          addressArea: j.addressArea,
-          source: j.source,
-          technicianName: j.technicianName,
-          cable10mmMeter: j.cable10mmMeter,
-          cable10mmUnitCost: 230,
-          cable10mmTotalCost: calc.cable10mmTotalCost,
-          cable6mmMeter: j.cable6mmMeter,
-          cable6mmUnitCost: 180,
-          cable6mmTotalCost: calc.cable6mmTotalCost,
-          breakerBoxQty: j.breakerBoxQty,
-          breakerBoxUnitCost: 4200,
-          breakerBoxTotalCost: calc.breakerBoxTotalCost,
-          earthingRodQty: 1,
-          earthingRodUnitCost: 3200,
-          earthingRodTotalCost: calc.earthingRodTotalCost,
-          wpbQty: 1,
-          wpbUnitCost: 1500,
-          wpbTotalCost: calc.wpbTotalCost,
-          ninUvrQty: 1,
-          ninUvrUnitCost: 3800,
-          ninUvrTotalCost: calc.ninUvrTotalCost,
-          rcboBreakerQty: 1,
-          rcboBreakerUnitCost: 3200,
-          rcboBreakerTotalCost: calc.rcboBreakerTotalCost,
-          additionalSupplyName: 'Conduit & Accessories',
-          additionalSupplyCost: j.additionalSupplyCost,
-          miscExp: j.miscExp,
-          totalJobCost: calc.totalJobCost,
-          billAmount: j.billAmount,
-          grossProfit: calc.grossProfit,
-          grossProfitMargin: calc.grossProfitMargin,
-          payStatus: j.payStatus,
-          paymentMethod: j.paymentMethod,
-          paidDate: j.date,
-          notes: 'Archived historical job record.',
-        },
-      })
-    }
-
-    // 6. Seed Vendor Purchases
+    // 5. Seed Vendor Purchases for active month
     const samplePurchases = [
       {
         date: `${activeMonth}-01`,
@@ -497,36 +367,12 @@ export async function POST(request: NextRequest) {
         paymentMethod: 'Cash',
         notes: 'Cash hardware restock',
       },
-      // Previous Month Purchases
-      {
-        date: `${prevMonth1}-02`,
-        monthKey: prevMonth1,
-        vendorName: 'Pakistan Cables Limited',
-        invoiceNo: 'PCL-2026-710',
-        item: '10mm Copper Cable (250m)',
-        itemKey: 'cable_10mm',
-        quantity: 250,
-        unitRate: 200,
-        totalAmount: 50000,
-        paymentMethod: 'Bank',
-      },
-      {
-        date: `${prevMonth1}-10`,
-        monthKey: prevMonth1,
-        vendorName: 'Schneider Electric Distributor',
-        invoiceNo: 'SCH-6910',
-        item: 'Breaker Box DB',
-        itemKey: 'breaker_box',
-        quantity: 10,
-        unitRate: 3600,
-        totalAmount: 36000,
-        paymentMethod: 'Bank',
-      },
     ]
 
     for (const p of samplePurchases) {
       await prisma.vendorPurchase.create({ data: p })
     }
+
 
     // 7. Seed General Operational Expenses (OpEx)
     const sampleExpenses = [
@@ -754,7 +600,6 @@ export async function POST(request: NextRequest) {
       success: true,
       message: 'Comprehensive sample data seeded successfully for Power EV Hub ERP!',
       activeMonth,
-      archivedMonth: prevMonth1,
     })
   } catch (error: any) {
     console.error('Error seeding data:', error)

@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { CurrencyCode, SUPPORTED_CURRENCIES, formatCurrency as formatCurr } from '@/lib/currency'
-import { getCurrentActiveMonth, isMonthArchived } from '@/lib/dateUtils'
+import { getCurrentActiveMonth, isMonthArchived, FOUNDATIONAL_CYCLE } from '@/lib/dateUtils'
 
 interface AppContextType {
   selectedMonth: string
@@ -37,7 +37,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [voucherJobId, setVoucherJobId] = useState<string | null>(null)
 
-  const isArchived = isMonthArchived(selectedMonth)
+  // Strict read-only mode is disabled across all concluded cycles
+  const isArchived = false
+
+  // Sanitize selectedMonth if it ever points to a pre-October 2026 cycle
+  useEffect(() => {
+    if (selectedMonth < FOUNDATIONAL_CYCLE) {
+      setSelectedMonth(FOUNDATIONAL_CYCLE)
+    }
+  }, [selectedMonth])
 
   // Initialize theme from local storage or default to dark
   useEffect(() => {

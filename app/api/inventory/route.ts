@@ -21,8 +21,8 @@ export async function GET(request: NextRequest) {
       await syncAllInventory()
     }
 
-    // 1. Current real-time warehouse stock levels
-    const currentStock = await getCurrentStockLevels(branch)
+    // 1. Current real-time warehouse stock levels for selected month
+    const currentStock = await getCurrentStockLevels(branch, month)
 
     // 2. Fetch daily ledger records for the selected month
     const where: any = { monthKey: month }
@@ -76,7 +76,8 @@ export async function POST(request: NextRequest) {
     // Handle full re-sync action
     if (body.action === 'sync') {
       await syncAllInventory(body.branch)
-      const currentStock = await getCurrentStockLevels(body.branch || 'All')
+      const targetMonth = body.month || getCurrentActiveMonth()
+      const currentStock = await getCurrentStockLevels(body.branch || 'All', targetMonth)
       return NextResponse.json({
         success: true,
         message: 'Warehouse inventory synchronized successfully',
@@ -106,7 +107,9 @@ export async function POST(request: NextRequest) {
     const usedQty = existing ? existing.usedQty : 0
     const restockQty = existing ? existing.restockQty : 0
     const closingStock = Math.round((opening + restockQty - usedQty) * 100) / 100
-    const resolvedNotes = notes !== undefined ? notes : (existing?.notes || `Opening stock set for ${resolvedBranch} warehouse`)
+    const resolvedNotes = notes !== undefined
+      ? (notes.toLowerCase().includes('manual') ? notes : `Manual adjustment: ${notes}`)
+      : (existing?.notes || `Manual adjustment opening stock set for ${resolvedBranch} warehouse`)
 
     let entry
     if (existing) {

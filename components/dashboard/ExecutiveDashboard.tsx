@@ -19,6 +19,7 @@ import {
   Layers,
   AlertTriangle,
   Lock,
+  Calendar,
   Plus,
   CreditCard,
   Receipt,
@@ -31,7 +32,7 @@ import { formatMonthLabel } from '@/lib/dateUtils'
 import { useAuth } from '@/components/auth/AuthContext'
 
 export function ExecutiveDashboard({ onTabChange }: { onTabChange?: (tab: string) => void }) {
-  const { selectedMonth, isArchived, formatCurrency, refreshKey, openNewJobModal } = useApp()
+  const { selectedMonth, activeMonth, isArchived, formatCurrency, refreshKey, openNewJobModal } = useApp()
   const { selectedBranch } = useBranch()
   const { isViewer } = useAuth()
   const [data, setData] = useState<any>(null)
@@ -67,23 +68,24 @@ export function ExecutiveDashboard({ onTabChange }: { onTabChange?: (tab: string
 
   return (
     <div className="space-y-6 pb-12">
-      {/* ARCHIVE NOTICE BANNER IF APPLICABLE */}
-      {isArchived && (
-        <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 flex items-center justify-between gap-4">
+      {/* HISTORICAL CYCLE BANNER IF APPLICABLE */}
+      {selectedMonth < activeMonth && (
+        <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Lock className="w-5 h-5 text-amber-500 shrink-0" />
+            <Calendar className="w-5 h-5 text-emerald-500 shrink-0" />
             <div>
-              <h4 className="text-sm font-bold">Historical Archive Mode: {formatMonthLabel(selectedMonth)}</h4>
-              <p className="text-xs text-amber-800/80 dark:text-amber-300/80">
-                You are reviewing archived historical installation records and closed financial reports.
+              <h4 className="text-sm font-bold">Historical Cycle: {formatMonthLabel(selectedMonth)}</h4>
+              <p className="text-xs text-emerald-800/80 dark:text-emerald-300/80">
+                You are reviewing records for a previous cycle. Full CRUD editing and inventory cascade updates remain enabled for administrators.
               </p>
             </div>
           </div>
-          <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-            Read-Only Audit
+          <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+            Active Editable Cycle
           </span>
         </div>
       )}
+
 
       {/* DASHBOARD HEADER & QUICK ACTIONS */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

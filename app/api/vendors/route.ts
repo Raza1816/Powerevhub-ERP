@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
     })
 
     // Fetch immediate live stock levels for the response
-    const currentStock = await getCurrentStockLevels(branch)
+    const currentStock = await getCurrentStockLevels(branch, monthKey)
 
     return NextResponse.json({
       success: true,
