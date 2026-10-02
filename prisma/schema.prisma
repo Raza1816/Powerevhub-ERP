@@ -154,13 +154,15 @@ model InventoryLedger {
   closingStock Float    @default(0)
   notes        String?
   referenceId  String?
+  movementType String?  @default("CRM_USAGE")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@unique([date, itemKey, branch])
+  @@index([date, itemKey, branch])
   @@index([monthKey])
   @@index([date])
   @@index([referenceId])
+  @@index([movementType])
 }
 
 model VendorPurchase {

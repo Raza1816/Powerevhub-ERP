@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
       where,
       orderBy: [
         { date: 'desc' },
-        { itemName: 'asc' },
+        { createdAt: 'desc' },
       ],
     })
 
@@ -98,15 +98,17 @@ export async function POST(request: NextRequest) {
     const itemName = itemDef ? itemDef.name : itemKey
     const unit = itemDef ? itemDef.unit : 'unit'
 
-    // Look up existing record for this specific date + item + branch combination
+    // Look up existing baseline/adjustment record for this specific date + item + branch combination
     const existing = await prisma.inventoryLedger.findFirst({
-      where: { date, itemKey, branch: resolvedBranch },
+      where: {
+        date,
+        itemKey,
+        branch: resolvedBranch,
+        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+      },
     })
 
     const opening = Number(openingStock) || 0
-    const usedQty = existing ? existing.usedQty : 0
-    const restockQty = existing ? existing.restockQty : 0
-    const closingStock = Math.round((opening + restockQty - usedQty) * 100) / 100
     const resolvedNotes = notes !== undefined
       ? (notes.toLowerCase().includes('manual') ? notes : `Manual adjustment: ${notes}`)
       : (existing?.notes || `Manual adjustment opening stock set for ${resolvedBranch} warehouse`)
@@ -117,9 +119,10 @@ export async function POST(request: NextRequest) {
         where: { id: existing.id },
         data: {
           openingStock: opening,
-          closingStock,
+          closingStock: opening,
           branch: resolvedBranch,
           notes: resolvedNotes,
+          movementType: 'MANUAL_ADJUSTMENT',
         },
       })
     } else {
@@ -132,9 +135,10 @@ export async function POST(request: NextRequest) {
           unit,
           branch: resolvedBranch,
           openingStock: opening,
-          usedQty,
-          restockQty,
-          closingStock,
+          usedQty: 0,
+          restockQty: 0,
+          closingStock: opening,
+          movementType: 'MANUAL_ADJUSTMENT',
           notes: resolvedNotes,
         },
       })

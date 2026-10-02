@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
 import { getActiveUnitRates, calculateJobCosts, getNextMonthlySn } from '@/lib/pricing'
-import { syncInventoryForDate } from '@/lib/inventory'
+import { syncCrmJobInventory, getCurrentStockLevels } from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -237,12 +237,14 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // 5. Automated Real-Time Inventory Deduction on job date
-    await syncInventoryForDate(date)
+    // 5. Automated Real-Time Inventory Deduction & Ledger Entry Creation
+    await syncCrmJobInventory(newJob)
+    const currentStock = await getCurrentStockLevels(newJob.branch, monthKey)
 
     return NextResponse.json({
       success: true,
       data: newJob,
+      currentStock,
     }, { status: 201 })
   } catch (error: any) {
     console.error('Error creating CRM job:', error)

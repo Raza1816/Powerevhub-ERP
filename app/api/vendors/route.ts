@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { syncInventoryDateAndCascade, normalizeInventoryItem, STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, ensureInventoryLedgerColumns } from '@/lib/inventory'
+import {
+  syncVendorPurchaseInventory,
+  syncVendorPurchaseInventoryOnEdit,
+  syncVendorPurchaseInventoryOnDelete,
+  normalizeInventoryItem,
+  STANDARD_INVENTORY_ITEMS,
+  getCurrentStockLevels,
+  ensureInventoryLedgerColumns,
+} from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -131,7 +139,7 @@ export async function POST(request: NextRequest) {
       })
 
       // 2. Synchronize inventory ledger movement cleanly with referenceId set to procurement entry's ID
-      await syncInventoryDateAndCascade(date, itemKey, branch, tx, created.id)
+      await syncVendorPurchaseInventory(created, tx)
 
       return created
     })
@@ -209,12 +217,8 @@ export async function PUT(request: NextRequest) {
         },
       })
 
-      // Sync old date/item/branch if date, item, or branch changed
-      if (oldDate !== newDate || oldItemKey !== itemKey || oldBranch !== branch) {
-        await syncInventoryDateAndCascade(oldDate, oldItemKey, oldBranch, tx)
-      }
-      // Sync new date/item/branch
-      await syncInventoryDateAndCascade(newDate, itemKey, branch, tx)
+      // Sync ledger entries and balances cleanly
+      await syncVendorPurchaseInventoryOnEdit(existing, up, tx)
 
       return up
     })
@@ -239,11 +243,9 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Purchase not found' }, { status: 404 })
     }
 
-    const { date, branch, itemKey } = purchase
-
     await prisma.$transaction(async (tx) => {
+      await syncVendorPurchaseInventoryOnDelete(purchase, tx)
       await tx.vendorPurchase.delete({ where: { id } })
-      await syncInventoryDateAndCascade(date, itemKey, branch, tx)
     })
 
     return NextResponse.json({ success: true, message: 'Purchase deleted and inventory ledger updated' })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getMonthKeyFromDate } from '@/lib/dateUtils'
 import { calculateJobCosts } from '@/lib/pricing'
-import { syncInventoryForDate } from '@/lib/inventory'
+import { syncCrmJobInventoryOnEdit, syncCrmJobInventoryOnDelete, getCurrentStockLevels } from '@/lib/inventory'
 
 export async function GET(
   request: NextRequest,
@@ -154,13 +154,11 @@ export async function PUT(
       },
     })
 
-    // Re-sync inventory on dates
-    await syncInventoryForDate(originalDate)
-    if (originalDate !== newDate) {
-      await syncInventoryForDate(newDate)
-    }
+    // Re-sync linked inventory ledger entries and balances
+    await syncCrmJobInventoryOnEdit(existing, updatedJob)
+    const currentStock = await getCurrentStockLevels(updatedJob.branch, updatedJob.monthKey)
 
-    return NextResponse.json({ success: true, data: updatedJob })
+    return NextResponse.json({ success: true, data: updatedJob, currentStock })
   } catch (error: any) {
     console.error('Error updating job:', error)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
@@ -180,15 +178,14 @@ export async function DELETE(
       return NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 })
     }
 
-    const jobDate = existing.date
+    // Delete linked inventory ledger entries and restore deducted warehouse quantities
+    await syncCrmJobInventoryOnDelete(existing)
     await prisma.crmJob.delete({
       where: { id: params.id },
     })
+    const currentStock = await getCurrentStockLevels(existing.branch, existing.monthKey)
 
-    // Rollback / recalculate inventory for that date
-    await syncInventoryForDate(jobDate)
-
-    return NextResponse.json({ success: true, message: 'Job deleted and inventory updated' })
+    return NextResponse.json({ success: true, message: 'Job deleted and inventory updated', currentStock })
   } catch (error: any) {
     console.error('Error deleting job:', error)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })

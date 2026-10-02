@@ -371,7 +371,18 @@ export function InventoryLedgerView() {
                         {formatDateDisplay(row.date)}
                       </td>
                       <td className="py-3 px-3 font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                        {row.itemName}
+                        <div className="flex items-center gap-1.5">
+                          <span>{row.itemName}</span>
+                          {selectedBranch === 'All' && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              row.branch === 'Lahore'
+                                ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
+                                : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                            }`}>
+                              {row.branch}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-3 text-right font-mono text-slate-600 dark:text-slate-400">
                         {row.openingStock} {row.unit}
@@ -385,7 +396,7 @@ export function InventoryLedgerView() {
                       <td className="py-3 px-3 text-right font-mono font-bold text-slate-900 dark:text-slate-100">
                         {row.closingStock} {row.unit}
                       </td>
-                      <td className="py-3 px-3 text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
+                      <td className="py-3 px-3 text-slate-500 dark:text-slate-400 truncate max-w-[280px]" title={row.notes || ''}>
                         {row.notes || (row.usedQty > 0 ? 'CRM Installation Deductions' : 'Opening stock carryover')}
                       </td>
                       {!isArchived && !isViewer && (

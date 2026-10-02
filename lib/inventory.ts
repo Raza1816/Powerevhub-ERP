@@ -21,6 +21,28 @@ export const STANDARD_INVENTORY_ITEMS: InventoryItemDefinition[] = [
   { key: 'rcbo_breaker', name: 'RCBO Breaker', unit: 'unit', category: 'Electrical', lowStockThreshold: 12, crmField: 'rcboBreakerQty' },
 ]
 
+/**
+ * Exact Canonical Material Mapping Table between CRM Installation Job form fields
+ * and the Master Inventory Ledger items.
+ */
+export interface CrmMaterialMapping {
+  field: string
+  key: string
+  name: string
+  unit: string
+}
+
+export const CRM_MATERIAL_MAPPINGS: CrmMaterialMapping[] = [
+  { field: 'cable10mmMeter', key: 'cable_10mm', name: '10mm Cable', unit: 'meter' },
+  { field: 'cable6mmMeter', key: 'cable_6mm', name: '6mm Cable', unit: 'meter' },
+  { field: 'cable16mmMeter', key: 'cable_16mm', name: '16mm 4-Core Copper Cable', unit: 'meter' },
+  { field: 'breakerBoxQty', key: 'breaker_box', name: 'DB Box (Breaker Box)', unit: 'unit' },
+  { field: 'earthingRodQty', key: 'earthing_rod', name: 'Earthing Rod', unit: 'unit' },
+  { field: 'wpbQty', key: 'wpb', name: 'WPB (Waterproof Box)', unit: 'unit' },
+  { field: 'ninUvrQty', key: 'nin_uvr', name: 'NIN UVR (Voltage Relay)', unit: 'unit' },
+  { field: 'rcboBreakerQty', key: 'rcbo_breaker', name: 'RCBO Breaker', unit: 'unit' },
+]
+
 export const DEFAULT_OPENING_STOCKS: Record<string, { Karachi: number; Lahore: number }> = {
   cable_16mm: { Karachi: 0, Lahore: 0 },
   cable_10mm: { Karachi: 0, Lahore: 0 },
@@ -100,13 +122,28 @@ export async function ensureInventoryLedgerColumns(clientOrTx?: any) {
   try {
     await client.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "referenceId" TEXT;`)
   } catch {
-    // Column already exists in SQLite, safe to ignore
+    // Column already exists in SQLite
+  }
+  try {
+    await client.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "movementType" TEXT DEFAULT 'CRM_USAGE';`)
+  } catch {
+    // Column already exists in SQLite
+  }
+  try {
+    await client.$executeRawUnsafe(`DROP INDEX IF EXISTS "InventoryLedger_date_itemKey_branch_key";`)
+  } catch {
+    // Safe to ignore
   }
   try {
     await client.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_referenceId_idx" ON "InventoryLedger"("referenceId");`)
-  } catch {
-    // Index already exists, safe to ignore
-  }
+  } catch {}
+  try {
+    await client.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_movementType_idx" ON "InventoryLedger"("movementType");`)
+  } catch {}
+  try {
+    await client.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_date_itemKey_branch_idx" ON "InventoryLedger"("date", "itemKey", "branch");`)
+  } catch {}
+
   columnsVerified = true
 }
 
@@ -130,15 +167,359 @@ export async function getPrecedingMonthClosingStock(
       branch,
       date: { lt: firstDayOfTargetMonth },
     },
-    orderBy: { date: 'desc' },
+    orderBy: [
+      { date: 'desc' },
+      { createdAt: 'desc' },
+    ],
   })
 
   return prevEntry ? prevEntry.closingStock : 0
 }
 
 /**
- * Synchronizes a single date, itemKey, and branch, then cascades closing balances to all subsequent dates.
- * Uses primary-key update/create — completely avoiding SQLite ON CONFLICT clause errors.
+ * Chronologically recalculates running openingStock and closingStock balances
+ * for a specific itemKey and branch across all dates.
+ * Mathematical formula:
+ * Closing Stock = Opening Stock + Restocked (+) - CRM Used (-)
+ */
+export async function recalculateItemBalances(
+  itemKey: string,
+  branch: string,
+  clientOrTx?: any
+) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  // Fetch all ledger rows for this itemKey and branch
+  const rows = await client.inventoryLedger.findMany({
+    where: { itemKey, branch },
+    orderBy: [
+      { date: 'asc' },
+      { createdAt: 'asc' },
+    ],
+  })
+
+  if (rows.length === 0) return
+
+  // Prioritize OPENING_BALANCE rows on the same date to appear first
+  rows.sort((a: any, b: any) => {
+    if (a.date !== b.date) {
+      return a.date.localeCompare(b.date)
+    }
+    const aIsOpening = a.movementType === 'OPENING_BALANCE' || (a.notes && a.notes.includes('opening inventory baseline'))
+    const bIsOpening = b.movementType === 'OPENING_BALANCE' || (b.notes && b.notes.includes('opening inventory baseline'))
+    if (aIsOpening && !bIsOpening) return -1
+    if (!aIsOpening && bIsOpening) return 1
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  })
+
+  let runningClosing = 0
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    const isBaseline = row.movementType === 'OPENING_BALANCE' || (row.notes && row.notes.includes('opening inventory baseline'))
+    const isManualAdjustment = row.movementType === 'MANUAL_ADJUSTMENT' || (row.notes && (
+      row.notes.toLowerCase().includes('manual adjustment') ||
+      row.notes.toLowerCase().includes('manual override') ||
+      row.notes.toLowerCase().includes('user adjustment')
+    ))
+
+    let newOpening: number
+    if (isBaseline || isManualAdjustment) {
+      newOpening = row.openingStock
+    } else {
+      newOpening = runningClosing
+    }
+
+    const restock = Number(row.restockQty) || 0
+    const used = Number(row.usedQty) || 0
+    const newClosing = Math.round((newOpening + restock - used) * 100) / 100
+    runningClosing = newClosing
+
+    if (row.openingStock !== newOpening || row.closingStock !== newClosing || row.karachiQty !== (branch === 'Karachi' ? newClosing : 0) || row.lahoreQty !== (branch === 'Lahore' ? newClosing : 0)) {
+      await client.inventoryLedger.update({
+        where: { id: row.id },
+        data: {
+          openingStock: newOpening,
+          closingStock: newClosing,
+          karachiQty: branch === 'Karachi' ? newClosing : 0,
+          lahoreQty: branch === 'Lahore' ? newClosing : 0,
+        },
+      })
+    }
+  }
+}
+
+/**
+ * Synchronizes inventory deduction records for a CRM Installation Job.
+ * For each material with quantity > 0:
+ * Creates or updates an individual InventoryLedger record with:
+ * - date: Job installation date
+ * - branch: Job branch ('Karachi' | 'Lahore')
+ * - itemName: Canonical material name
+ * - itemKey: Canonical material key
+ * - quantity: Used quantity (recorded as usedQty)
+ * - referenceId: Linked CRM Job ID
+ * - movementType: 'CRM_USAGE'
+ * - ledgerNotes: "Used for Job #[Job Number] - [Client Name]"
+ * Then recalculates the branch balances and cascading closing stocks.
+ */
+export async function syncCrmJobInventory(job: any, clientOrTx?: any) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const date = job.date
+  const monthKey = job.monthKey || getMonthKeyFromDate(date)
+  const branch = job.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const sn = job.sn
+  const clientName = job.clientName || 'Client'
+  const ledgerNotes = `Used for Job #${sn} - ${clientName}`
+
+  const affectedKeys: string[] = []
+
+  for (const m of CRM_MATERIAL_MAPPINGS) {
+    const qty = Number(job[m.field]) || 0
+    affectedKeys.push(m.key)
+
+    const existing = await client.inventoryLedger.findFirst({
+      where: {
+        referenceId: job.id,
+        itemKey: m.key,
+      },
+    })
+
+    if (qty > 0) {
+      if (existing) {
+        await client.inventoryLedger.update({
+          where: { id: existing.id },
+          data: {
+            date,
+            monthKey,
+            branch,
+            itemName: m.name,
+            itemKey: m.key,
+            unit: m.unit,
+            usedQty: qty,
+            restockQty: 0,
+            notes: ledgerNotes,
+            movementType: 'CRM_USAGE',
+          },
+        })
+      } else {
+        await client.inventoryLedger.create({
+          data: {
+            date,
+            monthKey,
+            branch,
+            itemName: m.name,
+            itemKey: m.key,
+            unit: m.unit,
+            usedQty: qty,
+            restockQty: 0,
+            referenceId: job.id,
+            movementType: 'CRM_USAGE',
+            notes: ledgerNotes,
+          },
+        })
+      }
+    } else if (existing) {
+      await client.inventoryLedger.delete({ where: { id: existing.id } })
+    }
+  }
+
+  // Recalculate item running balances for all affected items in this branch
+  for (const key of affectedKeys) {
+    await recalculateItemBalances(key, branch, client)
+  }
+}
+
+/**
+ * Handles editing a CRM Installation Job's materials, branch, or date.
+ * Adjusts or replaces the linked ledger entries and restores/deducts the difference.
+ */
+export async function syncCrmJobInventoryOnEdit(
+  existingJob: any,
+  updatedJob: any,
+  clientOrTx?: any
+) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const oldBranch = existingJob.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const newBranch = updatedJob.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const oldDate = existingJob.date
+  const newDate = updatedJob.date
+
+  // If branch or date changed, remove existing ledger entries for this job
+  // so they are recreated cleanly under the new branch and date
+  if (oldBranch !== newBranch || oldDate !== newDate) {
+    const existingEntries = await client.inventoryLedger.findMany({
+      where: { referenceId: updatedJob.id },
+    })
+    if (existingEntries.length > 0) {
+      await client.inventoryLedger.deleteMany({
+        where: { referenceId: updatedJob.id },
+      })
+      const oldKeys = Array.from(new Set(existingEntries.map((e: any) => e.itemKey)))
+      for (const key of oldKeys) {
+        await recalculateItemBalances(key as string, oldBranch, client)
+      }
+    }
+  }
+
+  // Synchronize new usage in target branch
+  await syncCrmJobInventory(updatedJob, client)
+
+  // If branch changed, also recalculate all items in new branch
+  if (oldBranch !== newBranch) {
+    for (const m of CRM_MATERIAL_MAPPINGS) {
+      await recalculateItemBalances(m.key, newBranch, client)
+    }
+  }
+}
+
+/**
+ * Handles deleting a CRM Installation Job:
+ * Deletes all linked InventoryLedger entries with referenceId == job.id
+ * and restores the deducted quantities back to the warehouse.
+ */
+export async function syncCrmJobInventoryOnDelete(job: any, clientOrTx?: any) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const branch = job.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const existingEntries = await client.inventoryLedger.findMany({
+    where: { referenceId: job.id },
+  })
+
+  if (existingEntries.length > 0) {
+    await client.inventoryLedger.deleteMany({
+      where: { referenceId: job.id },
+    })
+
+    const affectedKeys = Array.from(new Set(existingEntries.map((e: any) => e.itemKey)))
+    for (const key of affectedKeys) {
+      await recalculateItemBalances(key as string, branch, client)
+    }
+  }
+}
+
+/**
+ * Synchronizes inventory restock records for a Vendor Purchase.
+ */
+export async function syncVendorPurchaseInventory(purchase: any, clientOrTx?: any) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const norm = normalizeInventoryItem(purchase.itemKey || purchase.item)
+  const branch = purchase.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const date = purchase.date
+  const monthKey = purchase.monthKey || getMonthKeyFromDate(date)
+  const quantity = Number(purchase.quantity) || 0
+  const notes = purchase.notes || `Restock via ${purchase.vendorName || 'Vendor'}`
+
+  const existing = await client.inventoryLedger.findFirst({
+    where: { referenceId: purchase.id },
+  })
+
+  if (quantity > 0) {
+    if (existing) {
+      await client.inventoryLedger.update({
+        where: { id: existing.id },
+        data: {
+          date,
+          monthKey,
+          branch,
+          itemName: norm.name,
+          itemKey: norm.key,
+          unit: norm.unit,
+          restockQty: quantity,
+          usedQty: 0,
+          movementType: 'RESTOCK',
+          notes,
+        },
+      })
+    } else {
+      await client.inventoryLedger.create({
+        data: {
+          date,
+          monthKey,
+          branch,
+          itemName: norm.name,
+          itemKey: norm.key,
+          unit: norm.unit,
+          restockQty: quantity,
+          usedQty: 0,
+          referenceId: purchase.id,
+          movementType: 'RESTOCK',
+          notes,
+        },
+      })
+    }
+  } else if (existing) {
+    await client.inventoryLedger.delete({ where: { id: existing.id } })
+  }
+
+  await recalculateItemBalances(norm.key, branch, client)
+}
+
+export async function syncVendorPurchaseInventoryOnEdit(
+  existingPurchase: any,
+  updatedPurchase: any,
+  clientOrTx?: any
+) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const oldBranch = existingPurchase.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const newBranch = updatedPurchase.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const oldNorm = normalizeInventoryItem(existingPurchase.itemKey || existingPurchase.item)
+  const newNorm = normalizeInventoryItem(updatedPurchase.itemKey || updatedPurchase.item)
+
+  if (oldBranch !== newBranch || oldNorm.key !== newNorm.key || existingPurchase.date !== updatedPurchase.date) {
+    await client.inventoryLedger.deleteMany({
+      where: { referenceId: updatedPurchase.id },
+    })
+    await recalculateItemBalances(oldNorm.key, oldBranch, client)
+  }
+
+  await syncVendorPurchaseInventory(updatedPurchase, client)
+
+  if (oldBranch !== newBranch || oldNorm.key !== newNorm.key) {
+    await recalculateItemBalances(newNorm.key, newBranch, client)
+  }
+}
+
+export async function syncVendorPurchaseInventoryOnDelete(purchase: any, clientOrTx?: any) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
+
+  const norm = normalizeInventoryItem(purchase.itemKey || purchase.item)
+  const branch = purchase.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+
+  await client.inventoryLedger.deleteMany({
+    where: { referenceId: purchase.id },
+  })
+
+  await recalculateItemBalances(norm.key, branch, client)
+}
+
+/**
+ * Compatibility wrapper for single date sync.
+ */
+export async function syncInventoryForDate(dateStr: string, targetBranch?: string) {
+  if (!dateStr) return
+  const branches = targetBranch ? [targetBranch] : ['Karachi', 'Lahore']
+
+  for (const branch of branches) {
+    for (const item of STANDARD_INVENTORY_ITEMS) {
+      await recalculateItemBalances(item.key, branch)
+    }
+  }
+}
+
+/**
+ * Compatibility wrapper for single date/item cascade.
  */
 export async function syncInventoryDateAndCascade(
   dateStr: string,
@@ -147,330 +528,42 @@ export async function syncInventoryDateAndCascade(
   txClient?: any,
   explicitReferenceId?: string
 ) {
-  const client = txClient || prisma
-  await ensureInventoryLedgerColumns(client)
-  const monthKey = getMonthKeyFromDate(dateStr)
-  const itemDef = STANDARD_INVENTORY_ITEMS.find((i) => i.key === itemKey)
-  const itemName = itemDef ? itemDef.name : itemKey
-  const unit = itemDef ? itemDef.unit : 'unit'
-
-  // 1. Fetch CRM jobs on this date
-  const jobs = await client.crmJob.findMany({
-    where: { date: dateStr, branch },
-  })
-  let usedQty = 0
-  if (itemDef?.crmField) {
-    jobs.forEach((j: any) => {
-      usedQty += Number(j[itemDef.crmField!]) || 0
-    })
-  }
-
-  // 2. Fetch vendor purchases on this date
-  const purchases = await client.vendorPurchase.findMany({
-    where: { date: dateStr, branch },
-  })
-  let restockQty = 0
-  const vendors: Array<{ vendor: string; qty: number; id: string }> = []
-  purchases.forEach((p: any) => {
-    const norm = normalizeInventoryItem(p.itemKey || p.item)
-    if (norm.key === itemKey) {
-      const q = Number(p.quantity) || 0
-      restockQty += q
-      vendors.push({ vendor: p.vendorName || 'Vendor', qty: q, id: p.id })
-    }
-  })
-
-  // 3. Find existing ledger entry on this date
-  const existing = await client.inventoryLedger.findFirst({
-    where: { date: dateStr, itemKey, branch },
-  })
-
-  const isManualAdjustment = existing && existing.notes && (
-    existing.notes.toLowerCase().includes('manual adjustment') ||
-    existing.notes.toLowerCase().includes('manual override') ||
-    existing.notes.toLowerCase().includes('user adjustment')
-  )
-
-  let openingStock: number
-  if (isManualAdjustment) {
-    openingStock = existing.openingStock
-  } else {
-    const prevEntry = await client.inventoryLedger.findFirst({
-      where: { itemKey, branch, date: { lt: dateStr } },
-      orderBy: { date: 'desc' },
-    })
-    openingStock = prevEntry ? prevEntry.closingStock : 0
-  }
-
-  const closingStock = Math.round((openingStock + restockQty - usedQty) * 100) / 100
-
-  // Resolve referenceId from purchase or explicit parameter
-  const resolvedRefId = explicitReferenceId || (vendors.length === 1 ? vendors[0].id : (vendors.length > 1 ? vendors.map((v) => v.id).join(',') : (existing?.referenceId || null)))
-
-  // If no activity and zero opening, clean up entry UNLESS it is the 1st of month baseline
-  const isMonthBaseline = dateStr.endsWith('-01')
-  if (usedQty === 0 && restockQty === 0 && openingStock === 0 && !isManualAdjustment && !isMonthBaseline) {
-    if (existing) {
-      await client.inventoryLedger.delete({ where: { id: existing.id } })
-    }
-  } else {
-    // Build descriptive notes
-    let ledgerNotes = ''
-    if (vendors.length === 1) {
-      ledgerNotes = `Restock via ${vendors[0].vendor}`
-    } else if (vendors.length > 1) {
-      ledgerNotes = `Restock via ${vendors.map((v) => `${v.vendor} (+${v.qty})`).join(', ')}`
-    }
-    if (usedQty > 0) {
-      ledgerNotes = ledgerNotes
-        ? `${ledgerNotes} | CRM Installation Deductions (-${usedQty})`
-        : `CRM Installation Deductions (-${usedQty})`
-    } else if (isManualAdjustment) {
-      ledgerNotes = existing.notes || `Manual override opening stock set for ${branch} warehouse`
-    } else if (isMonthBaseline) {
-      ledgerNotes = existing?.notes || `Month-end roll forward opening balance (${branch})`
-    } else if (!ledgerNotes) {
-      ledgerNotes = 'Stock balance carryover'
-    }
-
-    if (existing) {
-      await client.inventoryLedger.update({
-        where: { id: existing.id },
-        data: {
-          openingStock,
-          usedQty,
-          restockQty,
-          closingStock,
-          monthKey,
-          notes: ledgerNotes,
-          referenceId: resolvedRefId,
-        },
-      })
-    } else {
-      await client.inventoryLedger.create({
-        data: {
-          date: dateStr,
-          monthKey,
-          itemName,
-          itemKey,
-          unit,
-          branch,
-          openingStock,
-          usedQty,
-          restockQty,
-          closingStock,
-          notes: ledgerNotes,
-          referenceId: resolvedRefId,
-        },
-      })
-    }
-  }
-
-  // 4. Cascade to all subsequent dates across month boundaries
-  const subsequentRows = await client.inventoryLedger.findMany({
-    where: { itemKey, branch, date: { gt: dateStr } },
-    orderBy: { date: 'asc' },
-  })
-
-  let runningClosing = closingStock
-  for (const row of subsequentRows) {
-    const isRowManual = row.notes && (
-      row.notes.toLowerCase().includes('manual adjustment') ||
-      row.notes.toLowerCase().includes('manual override') ||
-      row.notes.toLowerCase().includes('user adjustment')
-    )
-    const newOpening = isRowManual ? row.openingStock : runningClosing
-    const newClosing = Math.round((newOpening + row.restockQty - row.usedQty) * 100) / 100
-    runningClosing = newClosing
-
-    await client.inventoryLedger.update({
-      where: { id: row.id },
-      data: {
-        openingStock: newOpening,
-        closingStock: newClosing,
-      },
-    })
-  }
+  await recalculateItemBalances(itemKey, branch, txClient)
 }
 
 /**
- * Re-aggregates and synchronizes inventory usage and restocks for a given date.
- */
-export async function syncInventoryForDate(dateStr: string, targetBranch?: string) {
-  if (!dateStr) return
-  const branches = targetBranch ? [targetBranch] : ['Karachi', 'Lahore']
-
-  for (const branch of branches) {
-    for (const item of STANDARD_INVENTORY_ITEMS) {
-      await syncInventoryDateAndCascade(dateStr, item.key, branch)
-    }
-  }
-}
-
-/**
- * Synchronizes the entire inventory ledger chronologically across all dates with purchases, jobs, or adjustments.
- * Cascades closing balances to subsequent dates, ensuring 100% mathematical integrity across month boundaries.
- * Completely SQLite-safe: uses primary key ID lookups and updates rather than compound upsert constraints.
+ * Synchronizes the entire inventory ledger across all CRM jobs, vendor purchases, and baseline balances.
+ * Guarantees that every CRM job with material usage > 0 has its individual CRM_USAGE ledger record
+ * and every vendor purchase has its RESTOCK ledger record, with 100% mathematical integrity.
  */
 export async function syncAllInventory(targetBranch?: string) {
+  await ensureInventoryLedgerColumns()
+  const activeMonth = getCurrentActiveMonth()
   const branches = targetBranch && targetBranch !== 'All' ? [targetBranch] : ['Karachi', 'Lahore']
 
+  // 1. Ensure master materials baseline exists for active month
+  await ensureMasterMaterialsExist(activeMonth)
+
   for (const branch of branches) {
-    // Collect all distinct dates from CRM jobs, Vendor purchases, and manual ledger adjustments
-    const [jobDates, purchaseDates, ledgerDates] = await Promise.all([
-      prisma.crmJob.findMany({
-        where: { branch },
-        select: { date: true },
-        distinct: ['date'],
-      }),
-      prisma.vendorPurchase.findMany({
-        where: { branch },
-        select: { date: true },
-        distinct: ['date'],
-      }),
-      prisma.inventoryLedger.findMany({
-        where: { branch },
-        select: { date: true },
-        distinct: ['date'],
-      }),
-    ])
+    // Fetch all CRM jobs for this branch
+    const jobs = await prisma.crmJob.findMany({
+      where: { branch },
+    })
+    for (const job of jobs) {
+      await syncCrmJobInventory(job)
+    }
 
-    const allDatesSet = new Set<string>()
-    jobDates.forEach((j) => j.date && allDatesSet.add(j.date))
-    purchaseDates.forEach((p) => p.date && allDatesSet.add(p.date))
-    ledgerDates.forEach((l) => l.date && allDatesSet.add(l.date))
+    // Fetch all vendor purchases for this branch
+    const purchases = await prisma.vendorPurchase.findMany({
+      where: { branch },
+    })
+    for (const purchase of purchases) {
+      await syncVendorPurchaseInventory(purchase)
+    }
 
-    const sortedDates = Array.from(allDatesSet).sort()
-
-    // For each item, keep a running closing balance starting from preceding history (or 0)
+    // Recalculate balances for all standard items in this branch
     for (const item of STANDARD_INVENTORY_ITEMS) {
-      let runningStock: number | null = null
-
-      for (const dateStr of sortedDates) {
-        const monthKey = getMonthKeyFromDate(dateStr)
-
-        // 1. Calculate CRM usage for this item on dateStr
-        const jobs = await prisma.crmJob.findMany({
-          where: { date: dateStr, branch },
-        })
-        let usedQty = 0
-        jobs.forEach((job: any) => {
-          if (item.key === 'cable_16mm') usedQty += Number(job.cable16mmMeter) || 0
-          else if (item.key === 'cable_10mm') usedQty += Number(job.cable10mmMeter) || 0
-          else if (item.key === 'cable_6mm') usedQty += Number(job.cable6mmMeter) || 0
-          else if (item.key === 'breaker_box') usedQty += Number(job.breakerBoxQty) || 0
-          else if (item.key === 'earthing_rod') usedQty += Number(job.earthingRodQty) || 0
-          else if (item.key === 'wpb') usedQty += Number(job.wpbQty) || 0
-          else if (item.key === 'nin_uvr') usedQty += Number(job.ninUvrQty) || 0
-          else if (item.key === 'rcbo_breaker') usedQty += Number(job.rcboBreakerQty) || 0
-        })
-
-        // 2. Calculate Restock from Vendor Purchases for this item on dateStr
-        const purchases = await prisma.vendorPurchase.findMany({
-          where: { date: dateStr, branch },
-        })
-        let restockQty = 0
-        const matchedPurchases: Array<{ vendorName: string; quantity: number }> = []
-
-        purchases.forEach((p) => {
-          const norm = normalizeInventoryItem(p.itemKey || p.item)
-          if (norm.key === item.key) {
-            const qty = Number(p.quantity) || 0
-            restockQty += qty
-            matchedPurchases.push({ vendorName: p.vendorName || 'Vendor', quantity: qty })
-          }
-        })
-
-        // 3. Check for existing ledger entry & manual opening stock adjustment
-        const existingEntry = await prisma.inventoryLedger.findFirst({
-          where: { date: dateStr, itemKey: item.key, branch },
-        })
-
-        const isManualAdjustment = existingEntry && existingEntry.notes && (
-          existingEntry.notes.toLowerCase().includes('manual adjustment') ||
-          existingEntry.notes.toLowerCase().includes('manual override') ||
-          existingEntry.notes.toLowerCase().includes('user adjustment')
-        )
-
-        let openingStock: number
-        if (isManualAdjustment) {
-          openingStock = existingEntry.openingStock
-        } else if (runningStock !== null) {
-          openingStock = runningStock
-        } else {
-          // Check if there was any prior entry in DB
-          const prevDbEntry = await prisma.inventoryLedger.findFirst({
-            where: { itemKey: item.key, branch, date: { lt: dateStr } },
-            orderBy: { date: 'desc' },
-          })
-          openingStock = prevDbEntry ? prevDbEntry.closingStock : 0
-        }
-
-        const closingStock = Math.round((openingStock + restockQty - usedQty) * 100) / 100
-        runningStock = closingStock
-
-        // If no movement and zero opening, delete orphaned record if present (unless 1st of month baseline)
-        const isMonthBaseline = dateStr.endsWith('-01')
-        if (usedQty === 0 && restockQty === 0 && openingStock === 0 && !isManualAdjustment && !isMonthBaseline) {
-          if (existingEntry) {
-            await prisma.inventoryLedger.delete({ where: { id: existingEntry.id } })
-          }
-          continue
-        }
-
-        // Build descriptive notes
-        let ledgerNotes = ''
-        if (matchedPurchases.length > 0) {
-          if (matchedPurchases.length === 1) {
-            ledgerNotes = `Restock via ${matchedPurchases[0].vendorName}`
-          } else {
-            const vendors = matchedPurchases.map((mp) => `${mp.vendorName} (+${mp.quantity})`).join(', ')
-            ledgerNotes = `Restock via ${vendors}`
-          }
-          if (usedQty > 0) {
-            ledgerNotes += ` | CRM Installation Deductions (-${usedQty})`
-          }
-        } else if (usedQty > 0) {
-          ledgerNotes = `CRM Installation Deductions (-${usedQty})`
-        } else if (isManualAdjustment) {
-          ledgerNotes = existingEntry.notes || `Manual override opening stock set for ${branch} warehouse`
-        } else if (isMonthBaseline) {
-          ledgerNotes = existingEntry?.notes || `Month-end roll forward opening balance (${branch})`
-        } else {
-          ledgerNotes = 'Stock balance carryover'
-        }
-
-        // SQLite-safe update or create by ID
-        if (existingEntry) {
-          await prisma.inventoryLedger.update({
-            where: { id: existingEntry.id },
-            data: {
-              openingStock,
-              usedQty,
-              restockQty,
-              closingStock,
-              monthKey,
-              notes: ledgerNotes,
-            },
-          })
-        } else {
-          await prisma.inventoryLedger.create({
-            data: {
-              date: dateStr,
-              monthKey,
-              itemName: item.name,
-              itemKey: item.key,
-              unit: item.unit,
-              branch,
-              openingStock,
-              usedQty,
-              restockQty,
-              closingStock,
-              notes: ledgerNotes,
-            },
-          })
-        }
-      }
+      await recalculateItemBalances(item.key, branch)
     }
   }
 }
@@ -478,7 +571,7 @@ export async function syncAllInventory(targetBranch?: string) {
 /**
  * Returns the current warehouse stock summary across all standard items for a given month.
  * Computes:
- * - Opening Stock (New Month) = Closing Stock (Preceding Month)
+ * - Opening Stock (New Month) = Preceding Month Closing Stock (or Baseline)
  * - Available Closing Stock = Opening Stock + Total Restocked - Total CRM Used
  * Computed independently per location:
  * - Karachi Opening Stock = Karachi Previous Closing Stock
@@ -492,53 +585,61 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
   const results = []
 
   for (const item of items) {
+    const firstDayDate = `${activeMonth}-01`
+
     // 1. Karachi stock for activeMonth
-    const karachiFirstDay = await prisma.inventoryLedger.findFirst({
-      where: { itemKey: item.key, branch: 'Karachi', monthKey: activeMonth },
-      orderBy: { date: 'asc' },
+    const karachiBaseline = await prisma.inventoryLedger.findFirst({
+      where: {
+        itemKey: item.key,
+        branch: 'Karachi',
+        monthKey: activeMonth,
+        date: firstDayDate,
+        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+      },
+      orderBy: { openingStock: 'desc' },
     })
-    const karachiOpening = karachiFirstDay
-      ? karachiFirstDay.openingStock
+    const karachiOpening = karachiBaseline
+      ? karachiBaseline.openingStock
       : await getPrecedingMonthClosingStock(item.key, 'Karachi', activeMonth)
 
     const karachiRows = await prisma.inventoryLedger.findMany({
-      where: { itemKey: item.key, branch: 'Karachi', monthKey: activeMonth },
-      select: { restockQty: true, usedQty: true },
+      where: {
+        itemKey: item.key,
+        branch: 'Karachi',
+        monthKey: activeMonth,
+      },
+      select: { restockQty: true, usedQty: true, closingStock: true, date: true },
     })
-    const karachiRestocked = karachiRows.reduce((sum, r) => sum + r.restockQty, 0)
-    const karachiUsed = karachiRows.reduce((sum, r) => sum + r.usedQty, 0)
-
-    const latestKarachi = await prisma.inventoryLedger.findFirst({
-      where: { itemKey: item.key, branch: 'Karachi', monthKey: activeMonth },
-      orderBy: { date: 'desc' },
-    })
-    const karachiStock = latestKarachi
-      ? latestKarachi.closingStock
-      : Math.round((karachiOpening + karachiRestocked - karachiUsed) * 100) / 100
+    const karachiRestocked = karachiRows.reduce((sum, r) => sum + (r.restockQty || 0), 0)
+    const karachiUsed = karachiRows.reduce((sum, r) => sum + (r.usedQty || 0), 0)
+    const karachiStock = Math.round((karachiOpening + karachiRestocked - karachiUsed) * 100) / 100
 
     // 2. Lahore stock for activeMonth
-    const lahoreFirstDay = await prisma.inventoryLedger.findFirst({
-      where: { itemKey: item.key, branch: 'Lahore', monthKey: activeMonth },
-      orderBy: { date: 'asc' },
+    const lahoreBaseline = await prisma.inventoryLedger.findFirst({
+      where: {
+        itemKey: item.key,
+        branch: 'Lahore',
+        monthKey: activeMonth,
+        date: firstDayDate,
+        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+      },
+      orderBy: { openingStock: 'desc' },
     })
-    const lahoreOpening = lahoreFirstDay
-      ? lahoreFirstDay.openingStock
+    const lahoreOpening = lahoreBaseline
+      ? lahoreBaseline.openingStock
       : await getPrecedingMonthClosingStock(item.key, 'Lahore', activeMonth)
 
     const lahoreRows = await prisma.inventoryLedger.findMany({
-      where: { itemKey: item.key, branch: 'Lahore', monthKey: activeMonth },
-      select: { restockQty: true, usedQty: true },
+      where: {
+        itemKey: item.key,
+        branch: 'Lahore',
+        monthKey: activeMonth,
+      },
+      select: { restockQty: true, usedQty: true, closingStock: true, date: true },
     })
-    const lahoreRestocked = lahoreRows.reduce((sum, r) => sum + r.restockQty, 0)
-    const lahoreUsed = lahoreRows.reduce((sum, r) => sum + r.usedQty, 0)
-
-    const latestLahore = await prisma.inventoryLedger.findFirst({
-      where: { itemKey: item.key, branch: 'Lahore', monthKey: activeMonth },
-      orderBy: { date: 'desc' },
-    })
-    const lahoreStock = latestLahore
-      ? latestLahore.closingStock
-      : Math.round((lahoreOpening + lahoreRestocked - lahoreUsed) * 100) / 100
+    const lahoreRestocked = lahoreRows.reduce((sum, r) => sum + (r.restockQty || 0), 0)
+    const lahoreUsed = lahoreRows.reduce((sum, r) => sum + (r.usedQty || 0), 0)
+    const lahoreStock = Math.round((lahoreOpening + lahoreRestocked - lahoreUsed) * 100) / 100
 
     // 3. Resolve active branch selection
     let currentQty: number
@@ -568,9 +669,6 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
       : Math.round(item.lowStockThreshold / 2)
     const isLowStock = currentQty <= threshold
 
-    const lastUpdatedDate =
-      latestKarachi?.date ?? latestLahore?.date ?? `${activeMonth}-01`
-
     results.push({
       ...item,
       currentStock: currentQty,
@@ -581,7 +679,7 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
       totalCrmUsed,
       branch,
       month: activeMonth,
-      lastUpdatedDate,
+      lastUpdatedDate: `${activeMonth}-01`,
       isLowStock,
     })
   }
@@ -591,9 +689,7 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
 
 /**
  * Ensures that all 8 standard master material definitions exist in the database for both
- * Karachi and Lahore branches with automated month-over-month inventory transition:
- * Opening Stock (New Month) = Closing Stock (Preceding Month).
- * Also ensures DropdownValue (category: INVENTORY_ITEM) and UnitRate records exist.
+ * Karachi and Lahore branches with baseline opening stock records.
  */
 export async function ensureMasterMaterialsExist(targetMonth?: string) {
   await ensureInventoryLedgerColumns()
@@ -601,22 +697,53 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
   const firstDayDate = `${activeMonth}-01`
   const branches = ['Karachi', 'Lahore']
 
-  // 1. Ensure baseline records exist in InventoryLedger for all 8 items and both branches
+  // Clean up any legacy duplicate baseline rows created before schema update
+  await prisma.inventoryLedger.deleteMany({
+    where: {
+      movementType: 'CRM_USAGE',
+      notes: { contains: 'baseline' },
+      usedQty: 0,
+      restockQty: 0,
+      referenceId: null,
+    },
+  })
+
+  // Deduplicate any multiple baseline rows on firstDayDate for the same itemKey and branch
   for (const branch of branches) {
     for (const item of STANDARD_INVENTORY_ITEMS) {
-      // Calculate roll-forward opening stock from preceding month
-      const rollForwardOpening = await getPrecedingMonthClosingStock(item.key, branch, activeMonth)
-
-      const existingFirstDay = await prisma.inventoryLedger.findFirst({
+      const allOnFirstDay = await prisma.inventoryLedger.findMany({
         where: {
           itemKey: item.key,
           branch,
           date: firstDayDate,
+          movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+        },
+        orderBy: { openingStock: 'desc' },
+      })
+      if (allOnFirstDay.length > 1) {
+        const toDelete = allOnFirstDay.slice(1)
+        for (const d of toDelete) {
+          await prisma.inventoryLedger.delete({ where: { id: d.id } })
+        }
+      }
+    }
+  }
+
+  // 1. Ensure baseline records exist in InventoryLedger for all 8 items and both branches
+  for (const branch of branches) {
+    for (const item of STANDARD_INVENTORY_ITEMS) {
+      const rollForwardOpening = await getPrecedingMonthClosingStock(item.key, branch, activeMonth)
+
+      const existingBaseline = await prisma.inventoryLedger.findFirst({
+        where: {
+          itemKey: item.key,
+          branch,
+          monthKey: activeMonth,
+          movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
         },
       })
 
-      if (!existingFirstDay) {
-        // Create baseline opening stock record for the new month
+      if (!existingBaseline) {
         await prisma.inventoryLedger.create({
           data: {
             date: firstDayDate,
@@ -631,27 +758,10 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
             closingStock: rollForwardOpening,
             karachiQty: branch === 'Karachi' ? rollForwardOpening : 0,
             lahoreQty: branch === 'Lahore' ? rollForwardOpening : 0,
-            notes: `Month-end roll forward opening balance (${branch})`,
+            movementType: 'OPENING_BALANCE',
+            notes: `Opening inventory baseline (${branch})`,
           },
         })
-      } else {
-        // If not a manual override, ensure opening stock reflects the preceding month's closing stock
-        const isUserManual = existingFirstDay.notes && (
-          existingFirstDay.notes.toLowerCase().includes('manual adjustment') ||
-          existingFirstDay.notes.toLowerCase().includes('manual override') ||
-          existingFirstDay.notes.toLowerCase().includes('user adjustment')
-        )
-        if (!isUserManual && existingFirstDay.openingStock !== rollForwardOpening) {
-          const newClosing = Math.round((rollForwardOpening + existingFirstDay.restockQty - existingFirstDay.usedQty) * 100) / 100
-          await prisma.inventoryLedger.update({
-            where: { id: existingFirstDay.id },
-            data: {
-              openingStock: rollForwardOpening,
-              closingStock: newClosing,
-            },
-          })
-          await syncInventoryDateAndCascade(firstDayDate, item.key, branch)
-        }
       }
     }
   }
@@ -706,8 +816,8 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
 
 /**
  * Wipes transaction movement records and resets all 8 standard master materials
- * to strictly 0 balances (openingStock: 0, usedQty: 0, restockQty: 0, closingStock: 0, karachiStock: 0, lahoreStock: 0)
- * for both Karachi and Lahore branches. Never leaves master materials missing.
+ * to strictly 0 balances (openingStock: 0, usedQty: 0, restockQty: 0, closingStock: 0)
+ * for both Karachi and Lahore branches.
  */
 export async function resetInventoryToZero(targetMonth?: string) {
   await ensureInventoryLedgerColumns()
@@ -715,10 +825,8 @@ export async function resetInventoryToZero(targetMonth?: string) {
   const firstDayDate = `${activeMonth}-01`
   const branches = ['Karachi', 'Lahore']
 
-  // 1. Wipe all existing records in InventoryLedger
   const deleteResult = await prisma.inventoryLedger.deleteMany({})
 
-  // 2. Immediately re-insert all 8 master material items with strictly 0 balances
   for (const branch of branches) {
     for (const item of STANDARD_INVENTORY_ITEMS) {
       await prisma.inventoryLedger.create({
@@ -735,19 +843,14 @@ export async function resetInventoryToZero(targetMonth?: string) {
           closingStock: 0,
           karachiQty: 0,
           lahoreQty: 0,
+          movementType: 'OPENING_BALANCE',
           notes: `Opening inventory baseline (${branch} - Reset to 0)`,
         },
       })
     }
   }
 
-  // 3. Ensure Dropdown and UnitRate masters remain fully intact
   await ensureMasterMaterialsExist(activeMonth)
-
-  // 4. Return the freshly zeroed current stock levels
   const currentStock = await getCurrentStockLevels('All', activeMonth)
   return { count: deleteResult.count, currentStock }
 }
-
-
-

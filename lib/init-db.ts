@@ -59,7 +59,7 @@ export async function initDatabase() {
       await applyRawDdl()
     }
 
-    // Always run fallback ALTER TABLE to guarantee referenceId column exists in SQLite
+    // Always run fallback ALTER TABLE to guarantee referenceId and movementType columns exist in SQLite
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "referenceId" TEXT;`)
       console.log('[Startup Init] ✓ Added referenceId column to InventoryLedger.')
@@ -67,7 +67,22 @@ export async function initDatabase() {
       // Column already exists, safe to ignore
     }
     try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "InventoryLedger" ADD COLUMN "movementType" TEXT DEFAULT 'CRM_USAGE';`)
+      console.log('[Startup Init] ✓ Added movementType column to InventoryLedger.')
+    } catch {
+      // Column already exists, safe to ignore
+    }
+    try {
+      await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS "InventoryLedger_date_itemKey_branch_key";`)
+    } catch {}
+    try {
       await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_referenceId_idx" ON "InventoryLedger"("referenceId");`)
+    } catch {}
+    try {
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_movementType_idx" ON "InventoryLedger"("movementType");`)
+    } catch {}
+    try {
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "InventoryLedger_date_itemKey_branch_idx" ON "InventoryLedger"("date", "itemKey", "branch");`)
     } catch {}
 
     // Step 3: Seed Admin and Viewer users if not present
