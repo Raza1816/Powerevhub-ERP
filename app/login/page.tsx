@@ -51,14 +51,15 @@ export default function LoginPage() {
 
       <div className="w-full max-w-md relative z-10">
         {/* Brand header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 to-cyan-500 shadow-lg shadow-emerald-500/20 mb-4 border border-emerald-400/30">
-            <Zap className="w-8 h-8 text-slate-950 fill-current" />
+        <div className="text-center mb-6">
+          <div className="flex justify-center mb-3">
+            <img
+              src="/erp/branding/logo-dark.png"
+              alt="Power EV Hub"
+              className="h-20 sm:h-24 w-auto max-w-[280px] object-contain drop-shadow-[0_12px_24px_rgba(0,0,0,0.8)] filter"
+            />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center justify-center gap-2">
-            POWER <span className="text-emerald-400">EV HUB</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-medium">
+          <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold">
             Enterprise Operations & Financial ERP
           </p>
         </div>

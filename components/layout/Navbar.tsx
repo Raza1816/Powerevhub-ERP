@@ -101,23 +101,26 @@ export function Navbar({ onTabChange, activeTab }: { onTabChange: (tab: string) 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 gap-4">
           {/* Logo & Brand */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 via-teal-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-emerald-500/20 text-slate-950">
-              <Zap className="w-6 h-6 fill-current" />
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div
+              className="flex items-center cursor-pointer hover:opacity-95 transition-opacity"
+              onClick={() => onTabChange('dashboard')}
+              title="Power EV Hub ERP"
+            >
+              <img
+                src="/erp/branding/logo-dark.png"
+                alt="Power EV Hub"
+                className="h-[38px] sm:h-[40px] w-auto object-contain hidden dark:block"
+              />
+              <img
+                src="/erp/branding/logo-light.png"
+                alt="Power EV Hub"
+                className="h-[38px] sm:h-[40px] w-auto object-contain block dark:hidden"
+              />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 bg-clip-text text-transparent">
-                  Power EV Hub
-                </span>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                  ERP v1.0
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 -mt-0.5 hidden sm:block">
-                EV Charger Installation & Financial Management
-              </p>
-            </div>
+            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hidden lg:inline-flex">
+              ERP v1.0
+            </span>
           </div>
 
           {/* Center Month Selector & Archive Status */}
