@@ -3,41 +3,39 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
-// Branch is stored as a plain String ("Karachi" | "Lahore" | "All") — SQLite does not support enums
-
 model UnitRate {
   id            String   @id @default(cuid())
-  itemName      String
-  itemKey       String   @unique
+  itemName      String   @db.VarChar(191)
+  itemKey       String   @unique @db.VarChar(191)
   rate          Float
-  unit          String   @default("meter")
+  unit          String   @default("meter") @db.VarChar(50)
   effectiveDate DateTime @default(now())
   active        Boolean  @default(true)
-  notes         String?
+  notes         String?  @db.Text
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
 
 model UnitRateHistory {
   id        String   @id @default(cuid())
-  itemKey   String
-  itemName  String
+  itemKey   String   @db.VarChar(191)
+  itemName  String   @db.VarChar(191)
   oldRate   Float
   newRate   Float
-  unit      String
+  unit      String   @db.VarChar(50)
   changedAt DateTime @default(now())
-  notes     String?
+  notes     String?  @db.Text
 }
 
 model DropdownValue {
   id        String   @id @default(cuid())
-  category  String // SOURCE, TECHNICIAN, PAYMENT_METHOD, INVENTORY_ITEM
-  value     String
-  color     String?
+  category  String   @db.VarChar(100) // SOURCE, TECHNICIAN, PAYMENT_METHOD, INVENTORY_ITEM
+  value     String   @db.VarChar(100)
+  color     String?  @db.VarChar(50)
   active    Boolean  @default(true)
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
@@ -47,16 +45,16 @@ model DropdownValue {
 }
 
 model CrmJob {
-  branch         String @default("Karachi")
+  branch         String @default("Karachi") @db.VarChar(50)
   id             String @id @default(cuid())
   sn             Int // Monthly sequential counter (resets to 1 each month)
-  date           String // "YYYY-MM-DD"
-  monthKey       String // "YYYY-MM"
-  clientName     String
-  contactNo      String
-  addressArea    String
-  source         String // "Direct", "MJD/MTP", "Sarah South", etc.
-  technicianName String // "Team Alpha", "Team Ali", etc.
+  date           String @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey       String @db.VarChar(20) // "YYYY-MM"
+  clientName     String @db.VarChar(191)
+  contactNo      String @db.VarChar(50)
+  addressArea    String @db.Text
+  source         String @db.VarChar(100) // "Direct", "MJD/MTP", "Sarah South", etc.
+  technicianName String @db.VarChar(100) // "Team Alpha", "Team Ali", etc.
 
   // Material Usage & Locked Unit Rates
   cable16mmMeter     Float @default(0)
@@ -93,12 +91,12 @@ model CrmJob {
   rcboBreakerTotalCost Float @default(0)
 
   // Additional Supply and Misc Expenses
-  additionalSupplyName String @default("")
+  additionalSupplyName String @default("") @db.VarChar(191)
   additionalSupplyCost Float  @default(0)
   miscExp              Float  @default(0)
 
   // EV Vehicle Brand
-  vehicleBrand         String?   @default("BYD")
+  vehicleBrand String? @default("BYD") @db.VarChar(50)
 
   // Calculated Financials
   totalJobCost      Float @default(0) // 16mm + 10mm + 6mm cost + breaker cost + additionalSupplyCost + miscExp
@@ -107,10 +105,10 @@ model CrmJob {
   grossProfitMargin Float @default(0) // (grossProfit / billAmount) * 100
 
   // Payment Details & Status
-  payStatus     String   @default("Trade Receivable") // "Paid" | "Trade Receivable" | "Voucher"
-  paymentStatus String   @default("Trade Receivable") // "Paid" | "Trade Receivable" | "Voucher"
-  paymentMethod String   @default("Cash") // "Cash" | "Bank" | "BYD Voucher"
-  paidDate      String?
+  payStatus     String  @default("Trade Receivable") @db.VarChar(50) // "Paid" | "Trade Receivable" | "Voucher"
+  paymentStatus String  @default("Trade Receivable") @db.VarChar(50) // "Paid" | "Trade Receivable" | "Voucher"
+  paymentMethod String  @default("Cash") @db.VarChar(50) // "Cash" | "Bank" | "BYD Voucher"
+  paidDate      String? @db.VarChar(20)
 
   // BYD Voucher Workflow Tracking
   isVoucher                Boolean   @default(false)
@@ -122,9 +120,9 @@ model CrmJob {
   customerExcessPaid       Float?    @default(0)
   customerExcessReceivable Float?    @default(0)
 
-  notes         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([monthKey])
   @@index([date])
@@ -138,23 +136,22 @@ model CrmJob {
 }
 
 model InventoryLedger {
-  branch       String   @default("Karachi")
+  branch       String   @default("Karachi") @db.VarChar(50)
   id           String   @id @default(cuid())
-  date         String // "YYYY-MM-DD"
-  monthKey     String // "YYYY-MM"
-  itemName     String // e.g. "10mm Cable", "6mm Cable", "DB Box", "Earthing Rod", "WPB", "NIN UVR", "RCBO Breaker"
-  itemKey      String // "cable_10mm", "cable_6mm", "breaker_box", etc.
-  unit         String   @default("meter")
+  date         String   @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey     String   @db.VarChar(20) // "YYYY-MM"
+  itemName     String   @db.VarChar(191) // e.g. "10mm Cable", "6mm Cable", "DB Box", "Earthing Rod", "WPB", "NIN UVR", "RCBO Breaker"
+  itemKey      String   @db.VarChar(100) // "cable_10mm", "cable_6mm", "breaker_box", etc.
+  unit         String   @default("meter") @db.VarChar(50)
   karachiQty   Float    @default(0)
   lahoreQty    Float    @default(0)
-  // Retained original fields for backward compatibility
   openingStock Float    @default(0)
   usedQty      Float    @default(0)
   restockQty   Float    @default(0)
   closingStock Float    @default(0)
-  notes        String?
-  referenceId  String?
-  movementType String?  @default("CRM_USAGE")
+  notes        String?  @db.Text
+  referenceId  String?  @db.VarChar(191)
+  movementType String?  @default("CRM_USAGE") @db.VarChar(50)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -166,20 +163,20 @@ model InventoryLedger {
 }
 
 model VendorPurchase {
-  branch        String   @default("Karachi")
+  branch        String   @default("Karachi") @db.VarChar(50)
   id            String   @id @default(cuid())
-  date          String // "YYYY-MM-DD"
-  monthKey      String // "YYYY-MM"
-  vendorName    String
-  invoiceNo     String   @default("")
-  item          String
-  itemKey       String
+  date          String   @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey      String   @db.VarChar(20) // "YYYY-MM"
+  vendorName    String   @db.VarChar(191)
+  invoiceNo     String   @default("") @db.VarChar(100)
+  item          String   @db.VarChar(191)
+  itemKey       String   @db.VarChar(100)
   quantity      Float
   unitRate      Float
   totalAmount   Float
-  paymentMethod String   @default("Bank") // "Cash" | "Bank" | "Unpaid"
-  settledDate   String? // Settlement date when payment is made
-  notes         String?
+  paymentMethod String   @default("Bank") @db.VarChar(50) // "Cash" | "Bank" | "Unpaid"
+  settledDate   String?  @db.VarChar(20) // Settlement date when payment is made
+  notes         String?  @db.Text
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -191,21 +188,21 @@ model VendorPurchase {
 
 model AppConfig {
   id          String   @id @default(cuid())
-  key         String   @unique
-  value       String
-  description String?
+  key         String   @unique @db.VarChar(191)
+  value       String   @db.Text
+  description String?  @db.Text
   updatedAt   DateTime @updatedAt
 }
 
 model GeneralExpense {
-  branch        String   @default("Karachi")
+  branch        String   @default("Karachi") @db.VarChar(50)
   id            String   @id @default(cuid())
-  date          String // "YYYY-MM-DD"
-  monthKey      String // "YYYY-MM"
-  category      String // Free-text, e.g. "Office Rent", "Stationery", "Generator Fuel", "Tea & Refreshments"
+  date          String   @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey      String   @db.VarChar(20) // "YYYY-MM"
+  category      String   @db.VarChar(191) // Free-text, e.g. "Office Rent", "Stationery", "Generator Fuel", "Tea & Refreshments"
   amount        Float
-  paymentMethod String   @default("Cash") // "Cash" | "Bank"
-  notes         String?
+  paymentMethod String   @default("Cash") @db.VarChar(50) // "Cash" | "Bank"
+  notes         String?  @db.Text
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -216,16 +213,16 @@ model GeneralExpense {
 }
 
 model Employee {
-  branch                String          @default("Karachi")
+  branch                String          @default("Karachi") @db.VarChar(50)
   id                    String          @id @default(cuid())
-  name                  String
-  designation           String // e.g. Installer, Supervisor, Manager, Lead Electrician
+  name                  String          @db.VarChar(191)
+  designation           String          @db.VarChar(191) // e.g. Installer, Supervisor, Manager, Lead Electrician
   baseSalary            Float           @default(0) // Monthly Base Salary (PKR)
   defaultFuelAllocation Float           @default(0) // Default Monthly Fuel Allocation (PKR)
-  contactNo             String?
-  dateOfJoining         String? // "YYYY-MM-DD"
+  contactNo             String?         @db.VarChar(50)
+  dateOfJoining         String?         @db.VarChar(20) // "YYYY-MM-DD"
   active                Boolean         @default(true)
-  notes                 String?
+  notes                 String?         @db.Text
   advances              SalaryAdvance[]
   payrollRecords        PayrollRecord[]
   createdAt             DateTime        @default(now())
@@ -233,17 +230,17 @@ model Employee {
 }
 
 model SalaryAdvance {
-  branch         String   @default("Karachi")
+  branch         String   @default("Karachi") @db.VarChar(50)
   id             String   @id @default(cuid())
-  employeeId     String
+  employeeId     String   @db.VarChar(191)
   employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  date           String // "YYYY-MM-DD"
-  monthKey       String // "YYYY-MM"
+  date           String   @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey       String   @db.VarChar(20) // "YYYY-MM"
   amount         Float // Advance Amount (PKR)
-  paymentMethod  String   @default("Cash") // "Cash" | "Bank"
+  paymentMethod  String   @default("Cash") @db.VarChar(50) // "Cash" | "Bank"
   deductedAmount Float    @default(0)
-  status         String   @default("Active") // "Active" | "Settled"
-  notes          String?
+  status         String   @default("Active") @db.VarChar(50) // "Active" | "Settled"
+  notes          String?  @db.Text
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -253,12 +250,12 @@ model SalaryAdvance {
 }
 
 model PayrollRecord {
-  branch                String   @default("Karachi")
+  branch                String   @default("Karachi") @db.VarChar(50)
   id                    String   @id @default(cuid())
-  employeeId            String
+  employeeId            String   @db.VarChar(191)
   employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  date                  String // "YYYY-MM-DD"
-  monthKey              String // "YYYY-MM"
+  date                  String   @db.VarChar(20) // "YYYY-MM-DD"
+  monthKey              String   @db.VarChar(20) // "YYYY-MM"
   baseSalary            Float    @default(0) // Base Salary (or partial payout entered)
   overtimeAmount        Float    @default(0) // Overtime Amount (PKR)
   foodIncentive         Float    @default(0) // Food Incentive Amount (PKR)
@@ -267,8 +264,8 @@ model PayrollRecord {
   totalGrossEarnings    Float    @default(0) // Base Salary + Overtime + Food + Fuel + Installation
   advanceDeduction      Float    @default(0) // Advance Salary Deduction
   netPayable            Float    @default(0) // Total Gross Earnings - Advance Salary Deduction
-  paymentMethod         String   @default("Bank") // "Cash" | "Bank"
-  notes                 String?
+  paymentMethod         String   @default("Bank") @db.VarChar(50) // "Cash" | "Bank"
+  notes                 String?  @db.Text
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -279,10 +276,10 @@ model PayrollRecord {
 
 model User {
   id           String   @id @default(cuid())
-  username     String   @unique
-  passwordHash String
-  role         String   @default("viewer") // "admin" | "viewer"
-  name         String?
+  username     String   @unique @db.VarChar(191)
+  passwordHash String   @db.VarChar(255)
+  role         String   @default("viewer") @db.VarChar(50) // "admin" | "viewer"
+  name         String?  @db.VarChar(191)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
