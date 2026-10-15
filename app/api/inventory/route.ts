@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, getMonthKeyFromDate } from '@/lib/dateUtils'
-import { STANDARD_INVENTORY_ITEMS, getCurrentStockLevels, syncAllInventory, syncInventoryForDate, ensureMasterMaterialsExist } from '@/lib/inventory'
+import {
+  STANDARD_INVENTORY_ITEMS,
+  getCurrentStockLevels,
+  syncAllInventory,
+  syncInventoryForDate,
+  ensureMasterMaterialsExist,
+  adjustInventoryBalance,
+} from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -85,69 +92,22 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const { date, itemKey, openingStock, notes, branch, transactionType } = body
-
-    if (!date || !itemKey) {
-      return NextResponse.json({ success: false, error: 'Date and itemKey are required' }, { status: 400 })
+    if (!body.itemKey) {
+      return NextResponse.json({ success: false, error: 'itemKey is required' }, { status: 400 })
     }
 
-    const resolvedBranch = branch === 'Lahore' ? 'Lahore' : 'Karachi'
+    const result = await adjustInventoryBalance(body)
 
-    const monthKey = getMonthKeyFromDate(date)
-    const itemDef = STANDARD_INVENTORY_ITEMS.find(i => i.key === itemKey)
-    const itemName = itemDef ? itemDef.name : itemKey
-    const unit = itemDef ? itemDef.unit : 'unit'
-
-    // Look up existing baseline/adjustment record for this specific date + item + branch combination
-    const existing = await prisma.inventoryLedger.findFirst({
-      where: {
-        date,
-        itemKey,
-        branch: resolvedBranch,
-        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
-      },
+    return NextResponse.json({
+      success: true,
+      message: 'Warehouse inventory adjustment saved successfully',
+      data: result.entry,
+      currentStock: result.currentStock,
+      karachiStock: result.karachiStock,
+      lahoreStock: result.lahoreStock,
+      availableStock: result.availableStock,
+      branchStock: result.branchStock,
     })
-
-    const opening = Number(openingStock) || 0
-    const resolvedNotes = notes !== undefined
-      ? (notes.toLowerCase().includes('manual') ? notes : `Manual adjustment: ${notes}`)
-      : (existing?.notes || `Manual adjustment opening stock set for ${resolvedBranch} warehouse`)
-
-    let entry
-    if (existing) {
-      entry = await prisma.inventoryLedger.update({
-        where: { id: existing.id },
-        data: {
-          openingStock: opening,
-          closingStock: opening,
-          branch: resolvedBranch,
-          notes: resolvedNotes,
-          movementType: 'MANUAL_ADJUSTMENT',
-        },
-      })
-    } else {
-      entry = await prisma.inventoryLedger.create({
-        data: {
-          date,
-          monthKey,
-          itemName,
-          itemKey,
-          unit,
-          branch: resolvedBranch,
-          openingStock: opening,
-          usedQty: 0,
-          restockQty: 0,
-          closingStock: opening,
-          movementType: 'MANUAL_ADJUSTMENT',
-          notes: resolvedNotes,
-        },
-      })
-    }
-
-    // Cascade adjustment forward to all subsequent dates
-    await syncAllInventory(resolvedBranch)
-
-    return NextResponse.json({ success: true, data: entry })
   } catch (error: any) {
     console.error('Error updating inventory:', error)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })

@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { useApp } from '@/components/common/AppContext'
 import { useBranch } from '@/app/context/BranchContext'
 import { useToast } from '@/components/common/Toast'
@@ -33,6 +34,7 @@ export const STANDARD_MASTER_MATERIALS = [
 ]
 
 export function InventoryLedgerView() {
+  const router = useRouter()
   const { selectedMonth, isArchived, refreshKey, triggerRefresh } = useApp()
   const { selectedBranch } = useBranch()
   const { isViewer } = useAuth()
@@ -106,10 +108,27 @@ export function InventoryLedgerView() {
       return
     }
     if (item) setAdjustItemKey(item.itemKey || item.key)
-    if (date) setAdjustDate(date)
-    setAdjustOpeningStock(item?.openingStock || 100)
+    if (date) {
+      setAdjustDate(date)
+    } else {
+      const today = getTodayDateString()
+      const todayMonth = today.substring(0, 7)
+      if (selectedMonth === todayMonth) {
+        setAdjustDate(today)
+      } else {
+        setAdjustDate(`${selectedMonth}-01`)
+      }
+    }
+    const initialQty =
+      item?.openingStock !== undefined
+        ? item.openingStock
+        : (item?.currentStock !== undefined ? item.currentStock : 100)
+    setAdjustOpeningStock(initialQty)
     // Pre-select the globally active branch; fall back to Karachi for 'All'
-    setAdjustBranch(selectedBranch === 'Lahore' ? 'Lahore' : 'Karachi')
+    setAdjustBranch(
+      item?.branch === 'Lahore' || selectedBranch === 'Lahore' ? 'Lahore' : 'Karachi'
+    )
+    setAdjustNotes(item?.notes || '')
     setIsAdjustModalOpen(true)
   }
 
@@ -117,16 +136,18 @@ export function InventoryLedgerView() {
     e.preventDefault()
     try {
       setIsSubmitting(true)
-      const res = await fetch(`${getApiBase()}/api/inventory`, {
+      const isFirstDay = adjustDate.endsWith('-01')
+      const res = await fetch(`${getApiBase()}/api/inventory/adjust`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date: adjustDate,
           itemKey: adjustItemKey,
           openingStock: Number(adjustOpeningStock),
+          targetBalance: Number(adjustOpeningStock),
           branch: adjustBranch,
-          transactionType: 'OPENING_STOCK',
-          notes: adjustNotes || `Opening stock set for ${adjustBranch} warehouse`,
+          transactionType: isFirstDay ? 'OPENING_STOCK' : 'MANUAL_ADJUSTMENT',
+          notes: adjustNotes || (isFirstDay ? `Opening stock set for ${adjustBranch} warehouse` : `Manual adjustment for ${adjustBranch} warehouse`),
         }),
       })
 
@@ -134,10 +155,25 @@ export function InventoryLedgerView() {
       if (data.success) {
         toast.success(
           'Stock Balance Updated',
-          `${adjustBranch} warehouse opening stock recalculated with CRM deductions.`
+          `${adjustBranch} warehouse balance updated and synchronized with available cards.`
         )
+
+        // Real-Time Mutation: Immediately update local state so cards reflect numbers with zero lag
+        if (data.currentStock || data.data?.currentStock) {
+          const freshStock = data.currentStock || data.data.currentStock
+          setInventoryData((prev: any) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              currentStock: freshStock,
+            }
+          })
+        }
+
         setIsAdjustModalOpen(false)
+        fetchInventory()
         triggerRefresh()
+        router.refresh()
       } else {
         toast.error('Update Failed', data.error)
       }
@@ -482,8 +518,9 @@ export function InventoryLedgerView() {
               </div>
 
               <div>
-                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Opening Stock Quantity
+                <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1 flex items-center justify-between">
+                  <span>Opening Stock / Target Balance</span>
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-normal">Ground-Truth Baseline</span>
                 </label>
                 <input
                   type="number"
@@ -494,6 +531,9 @@ export function InventoryLedgerView() {
                   onChange={(e) => setAdjustOpeningStock(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 font-bold bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
                 />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  The warehouse balance cards will immediately reflect this number, calculating forward with subsequent purchases and job deductions.
+                </p>
               </div>
 
               <div>

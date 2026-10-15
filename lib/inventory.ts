@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { getMonthKeyFromDate, getCurrentActiveMonth } from './dateUtils'
+import { getMonthKeyFromDate, getCurrentActiveMonth, getTodayDateString } from './dateUtils'
 
 export interface InventoryItemDefinition {
   key: string
@@ -201,15 +201,25 @@ export async function recalculateItemBalances(
 
   if (rows.length === 0) return
 
-  // Prioritize OPENING_BALANCE rows on the same date to appear first
+  // Prioritize baseline and manual adjustment rows on the same date to appear first
   rows.sort((a: any, b: any) => {
     if (a.date !== b.date) {
       return a.date.localeCompare(b.date)
     }
-    const aIsOpening = a.movementType === 'OPENING_BALANCE' || (a.notes && a.notes.includes('opening inventory baseline'))
-    const bIsOpening = b.movementType === 'OPENING_BALANCE' || (b.notes && b.notes.includes('opening inventory baseline'))
-    if (aIsOpening && !bIsOpening) return -1
-    if (!aIsOpening && bIsOpening) return 1
+    const aIsBaseline =
+      a.movementType === 'OPENING_BALANCE' ||
+      a.movementType === 'MANUAL_ADJUSTMENT' ||
+      (a.notes && a.notes.toLowerCase().includes('baseline'))
+    const bIsBaseline =
+      b.movementType === 'OPENING_BALANCE' ||
+      b.movementType === 'MANUAL_ADJUSTMENT' ||
+      (b.notes && b.notes.toLowerCase().includes('baseline'))
+    if (aIsBaseline && !bIsBaseline) return -1
+    if (!aIsBaseline && bIsBaseline) return 1
+    if (aIsBaseline && bIsBaseline) {
+      if (a.movementType === 'OPENING_BALANCE' && b.movementType === 'MANUAL_ADJUSTMENT') return -1
+      if (a.movementType === 'MANUAL_ADJUSTMENT' && b.movementType === 'OPENING_BALANCE') return 1
+    }
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   })
 
@@ -578,70 +588,158 @@ export async function syncAllInventory(targetBranch?: string) {
  * - Lahore Opening Stock = Lahore Previous Closing Stock
  * - Consolidated = Karachi Opening + Lahore Opening
  */
-export async function getCurrentStockLevels(branch: string = 'All', targetMonth?: string) {
-  await ensureInventoryLedgerColumns()
+/**
+ * Calculates real-time dynamic stock for a specific material item and branch.
+ * Mathematical rule:
+ * Branch Stock = Latest Opening/Adjustment Baseline + Sum(RESTOCK for Branch) - Sum(CRM_USED for Branch)
+ * When a manual adjustment sets the baseline on a given date, any calculations starting
+ * from that point take the adjustment as the ground-truth baseline.
+ */
+export async function calculateBranchStock(
+  itemKey: string,
+  branch: string,
+  targetMonth: string,
+  clientOrTx?: any
+) {
+  const client = clientOrTx || prisma
+  const firstDayDate = `${targetMonth}-01`
+
+  const rows = await client.inventoryLedger.findMany({
+    where: {
+      itemKey,
+      branch,
+      monthKey: targetMonth,
+    },
+    orderBy: [
+      { date: 'asc' },
+      { createdAt: 'asc' },
+    ],
+  })
+
+  // Identify all baseline or manual adjustment rows in the month
+  const baselineRows = rows.filter((r: any) =>
+    r.movementType === 'OPENING_BALANCE' ||
+    r.movementType === 'MANUAL_ADJUSTMENT' ||
+    (r.notes && (
+      r.notes.toLowerCase().includes('manual adjustment') ||
+      r.notes.toLowerCase().includes('manual override') ||
+      r.notes.toLowerCase().includes('opening inventory baseline') ||
+      r.notes.toLowerCase().includes('opening stock set')
+    ))
+  )
+
+  let latestBaselineRow: any = null
+  if (baselineRows.length > 0) {
+    // Sort chronologically: by date ascending, then if same date, manual adjustment supersedes opening balance, then createdAt
+    baselineRows.sort((a: any, b: any) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date)
+      const aIsManual = a.movementType === 'MANUAL_ADJUSTMENT'
+      const bIsManual = b.movementType === 'MANUAL_ADJUSTMENT'
+      if (aIsManual && !bIsManual) return 1
+      if (!aIsManual && bIsManual) return -1
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    })
+    latestBaselineRow = baselineRows[baselineRows.length - 1]
+  }
+
+  let baselineStock = 0
+  let baselineDate: string | null = null
+  let baselineId: string | null = null
+  let baselineTime = 0
+
+  if (latestBaselineRow) {
+    baselineStock = Number(latestBaselineRow.openingStock) || 0
+    baselineDate = latestBaselineRow.date
+    baselineId = latestBaselineRow.id
+    baselineTime = new Date(latestBaselineRow.createdAt).getTime()
+  } else {
+    baselineStock = await getPrecedingMonthClosingStock(itemKey, branch, targetMonth, client)
+    baselineDate = null
+    baselineId = null
+  }
+
+  let restockAfterBaseline = 0
+  let usedAfterBaseline = 0
+  let totalMonthlyRestocked = 0
+  let totalMonthlyUsed = 0
+
+  for (const r of rows) {
+    const rRestock = Number(r.restockQty) || 0
+    const rUsed = Number(r.usedQty) || 0
+
+    totalMonthlyRestocked += rRestock
+    totalMonthlyUsed += rUsed
+
+    // Skip the baseline row itself
+    if (r.id === baselineId) continue
+    if (r.movementType === 'OPENING_BALANCE' || r.movementType === 'MANUAL_ADJUSTMENT') continue
+
+    let isAfter = false
+    if (!baselineDate) {
+      isAfter = true
+    } else if (r.date > baselineDate) {
+      isAfter = true
+    } else if (r.date === baselineDate) {
+      const rTime = new Date(r.createdAt).getTime()
+      if (rTime >= baselineTime) {
+        isAfter = true
+      }
+    }
+
+    if (isAfter) {
+      restockAfterBaseline += rRestock
+      usedAfterBaseline += rUsed
+    }
+  }
+
+  const currentStock = Math.round((baselineStock + restockAfterBaseline - usedAfterBaseline) * 100) / 100
+
+  // Month opening stock baseline on 1st of month (or earliest baseline/preceding)
+  const firstDayRow = baselineRows.find((r: any) => r.date === firstDayDate)
+  const openingStock = firstDayRow
+    ? Number(firstDayRow.openingStock) || 0
+    : (baselineRows.length > 0 ? Number(baselineRows[0].openingStock) || 0 : baselineStock)
+
+  return {
+    currentStock,
+    openingStock,
+    totalRestocked: Math.round(totalMonthlyRestocked * 100) / 100,
+    totalCrmUsed: Math.round(totalMonthlyUsed * 100) / 100,
+    restockAfterBaseline: Math.round(restockAfterBaseline * 100) / 100,
+    usedAfterBaseline: Math.round(usedAfterBaseline * 100) / 100,
+    baselineStock,
+    baselineDate,
+  }
+}
+
+/**
+ * Returns the current warehouse stock summary across all standard items for a given month.
+ * Computes:
+ * - Dynamic Card Calculation:
+ *   Branch Stock = Latest Opening/Adjustment Baseline + Sum(RESTOCK for Branch) - Sum(CRM_USED for Branch)
+ * - If a manual adjustment sets the baseline on a given date, any calculations starting from that point
+ *   take the adjustment as the ground-truth baseline.
+ * - Consolidated Available Balance = Karachi Stock + Lahore Stock
+ */
+export async function getCurrentStockLevels(
+  branch: string = 'All',
+  targetMonth?: string,
+  clientOrTx?: any
+) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
   const activeMonth = targetMonth || getCurrentActiveMonth()
   const items = STANDARD_INVENTORY_ITEMS
   const results = []
 
   for (const item of items) {
-    const firstDayDate = `${activeMonth}-01`
+    const karachi = await calculateBranchStock(item.key, 'Karachi', activeMonth, client)
+    const lahore = await calculateBranchStock(item.key, 'Lahore', activeMonth, client)
 
-    // 1. Karachi stock for activeMonth
-    const karachiBaseline = await prisma.inventoryLedger.findFirst({
-      where: {
-        itemKey: item.key,
-        branch: 'Karachi',
-        monthKey: activeMonth,
-        date: firstDayDate,
-        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
-      },
-      orderBy: { openingStock: 'desc' },
-    })
-    const karachiOpening = karachiBaseline
-      ? karachiBaseline.openingStock
-      : await getPrecedingMonthClosingStock(item.key, 'Karachi', activeMonth)
+    const karachiStock = karachi.currentStock
+    const lahoreStock = lahore.currentStock
+    const consolidatedStock = Math.round((karachiStock + lahoreStock) * 100) / 100
 
-    const karachiRows = await prisma.inventoryLedger.findMany({
-      where: {
-        itemKey: item.key,
-        branch: 'Karachi',
-        monthKey: activeMonth,
-      },
-      select: { restockQty: true, usedQty: true, closingStock: true, date: true },
-    })
-    const karachiRestocked = karachiRows.reduce((sum, r) => sum + (r.restockQty || 0), 0)
-    const karachiUsed = karachiRows.reduce((sum, r) => sum + (r.usedQty || 0), 0)
-    const karachiStock = Math.round((karachiOpening + karachiRestocked - karachiUsed) * 100) / 100
-
-    // 2. Lahore stock for activeMonth
-    const lahoreBaseline = await prisma.inventoryLedger.findFirst({
-      where: {
-        itemKey: item.key,
-        branch: 'Lahore',
-        monthKey: activeMonth,
-        date: firstDayDate,
-        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
-      },
-      orderBy: { openingStock: 'desc' },
-    })
-    const lahoreOpening = lahoreBaseline
-      ? lahoreBaseline.openingStock
-      : await getPrecedingMonthClosingStock(item.key, 'Lahore', activeMonth)
-
-    const lahoreRows = await prisma.inventoryLedger.findMany({
-      where: {
-        itemKey: item.key,
-        branch: 'Lahore',
-        monthKey: activeMonth,
-      },
-      select: { restockQty: true, usedQty: true, closingStock: true, date: true },
-    })
-    const lahoreRestocked = lahoreRows.reduce((sum, r) => sum + (r.restockQty || 0), 0)
-    const lahoreUsed = lahoreRows.reduce((sum, r) => sum + (r.usedQty || 0), 0)
-    const lahoreStock = Math.round((lahoreOpening + lahoreRestocked - lahoreUsed) * 100) / 100
-
-    // 3. Resolve active branch selection
     let currentQty: number
     let openingStock: number
     let totalRestocked: number
@@ -649,19 +747,19 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
 
     if (branch === 'Karachi') {
       currentQty = karachiStock
-      openingStock = karachiOpening
-      totalRestocked = karachiRestocked
-      totalCrmUsed = karachiUsed
+      openingStock = karachi.openingStock
+      totalRestocked = karachi.totalRestocked
+      totalCrmUsed = karachi.totalCrmUsed
     } else if (branch === 'Lahore') {
       currentQty = lahoreStock
-      openingStock = lahoreOpening
-      totalRestocked = lahoreRestocked
-      totalCrmUsed = lahoreUsed
+      openingStock = lahore.openingStock
+      totalRestocked = lahore.totalRestocked
+      totalCrmUsed = lahore.totalCrmUsed
     } else {
-      currentQty = Math.round((karachiStock + lahoreStock) * 100) / 100
-      openingStock = Math.round((karachiOpening + lahoreOpening) * 100) / 100
-      totalRestocked = Math.round((karachiRestocked + lahoreRestocked) * 100) / 100
-      totalCrmUsed = Math.round((karachiUsed + lahoreUsed) * 100) / 100
+      currentQty = consolidatedStock
+      openingStock = Math.round((karachi.openingStock + lahore.openingStock) * 100) / 100
+      totalRestocked = Math.round((karachi.totalRestocked + lahore.totalRestocked) * 100) / 100
+      totalCrmUsed = Math.round((karachi.totalCrmUsed + lahore.totalCrmUsed) * 100) / 100
     }
 
     const threshold = branch === 'All'
@@ -688,17 +786,211 @@ export async function getCurrentStockLevels(branch: string = 'All', targetMonth?
 }
 
 /**
+ * Safely adjusts or sets inventory opening stock / target balance for a specific material and branch.
+ * Wrapped in a prisma.$transaction:
+ * 1. Updates or creates baseline/adjustment record in InventoryLedger.
+ * 2. Directly updates master material record for that branch.
+ * 3. Cascades running balances forward using recalculateItemBalances.
+ * 4. Returns updated master material balances and consolidated available balance.
+ */
+export async function adjustInventoryBalance(
+  params: {
+    date?: string
+    itemKey: string
+    branch?: string
+    targetBalance?: number
+    openingStock?: number
+    notes?: string
+    transactionType?: string
+  },
+  clientOrTx?: any
+) {
+  const { itemKey, notes, transactionType } = params
+  if (!itemKey) {
+    throw new Error('itemKey is required for inventory adjustment')
+  }
+
+  const branch = params.branch === 'Lahore' ? 'Lahore' : 'Karachi'
+  const targetDate = params.date || getTodayDateString()
+  const targetMonth = getMonthKeyFromDate(targetDate)
+  const firstDayDate = `${targetMonth}-01`
+
+  const targetQty = Number(
+    params.targetBalance !== undefined
+      ? params.targetBalance
+      : (params.openingStock !== undefined ? params.openingStock : 0)
+  )
+
+  const itemDef = STANDARD_INVENTORY_ITEMS.find((i) => i.key === itemKey)
+  const itemName = itemDef ? itemDef.name : itemKey
+  const unit = itemDef ? itemDef.unit : 'unit'
+
+  const isOpeningStock =
+    transactionType === 'OPENING_STOCK' ||
+    targetDate === firstDayDate ||
+    (notes && notes.toLowerCase().includes('opening stock'))
+
+  const resolvedNotes = notes
+    ? (notes.toLowerCase().includes('manual') || notes.toLowerCase().includes('opening stock')
+        ? notes
+        : `Manual adjustment: ${notes}`)
+    : (isOpeningStock
+        ? `Manual adjustment: Opening stock set for ${branch} warehouse`
+        : `Manual adjustment stock set for ${branch} warehouse`)
+
+  await ensureInventoryLedgerColumns(clientOrTx)
+
+  const executeAdjustment = async (tx: any) => {
+    let ledgerEntry: any
+
+    if (isOpeningStock && targetDate === firstDayDate) {
+      // Find existing baseline entry on first day of month
+      const existingOnFirstDay = await tx.inventoryLedger.findFirst({
+        where: {
+          itemKey,
+          branch,
+          date: firstDayDate,
+          movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      })
+
+      if (existingOnFirstDay) {
+        ledgerEntry = await tx.inventoryLedger.update({
+          where: { id: existingOnFirstDay.id },
+          data: {
+            openingStock: targetQty,
+            closingStock: targetQty,
+            karachiQty: branch === 'Karachi' ? targetQty : 0,
+            lahoreQty: branch === 'Lahore' ? targetQty : 0,
+            notes: resolvedNotes,
+            movementType: 'OPENING_BALANCE',
+          },
+        })
+      } else {
+        ledgerEntry = await tx.inventoryLedger.create({
+          data: {
+            date: firstDayDate,
+            monthKey: targetMonth,
+            itemName,
+            itemKey,
+            unit,
+            branch,
+            openingStock: targetQty,
+            usedQty: 0,
+            restockQty: 0,
+            closingStock: targetQty,
+            karachiQty: branch === 'Karachi' ? targetQty : 0,
+            lahoreQty: branch === 'Lahore' ? targetQty : 0,
+            movementType: 'OPENING_BALANCE',
+            notes: resolvedNotes,
+          },
+        })
+      }
+    } else {
+      // Manual adjustment on targetDate
+      const existingAdj = await tx.inventoryLedger.findFirst({
+        where: {
+          date: targetDate,
+          itemKey,
+          branch,
+          movementType: 'MANUAL_ADJUSTMENT',
+        },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      })
+
+      if (existingAdj) {
+        ledgerEntry = await tx.inventoryLedger.update({
+          where: { id: existingAdj.id },
+          data: {
+            openingStock: targetQty,
+            closingStock: targetQty,
+            karachiQty: branch === 'Karachi' ? targetQty : 0,
+            lahoreQty: branch === 'Lahore' ? targetQty : 0,
+            notes: resolvedNotes,
+            movementType: 'MANUAL_ADJUSTMENT',
+          },
+        })
+      } else {
+        ledgerEntry = await tx.inventoryLedger.create({
+          data: {
+            date: targetDate,
+            monthKey: targetMonth,
+            itemName,
+            itemKey,
+            unit,
+            branch,
+            openingStock: targetQty,
+            usedQty: 0,
+            restockQty: 0,
+            closingStock: targetQty,
+            karachiQty: branch === 'Karachi' ? targetQty : 0,
+            lahoreQty: branch === 'Lahore' ? targetQty : 0,
+            movementType: 'MANUAL_ADJUSTMENT',
+            notes: resolvedNotes,
+          },
+        })
+      }
+    }
+
+    // Clean up any legacy duplicate baseline rows on that date for this item & branch
+    const existingDuplicates = await tx.inventoryLedger.findMany({
+      where: {
+        date: targetDate,
+        itemKey,
+        branch,
+        movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
+        id: { not: ledgerEntry.id },
+      },
+    })
+    for (const dup of existingDuplicates) {
+      await tx.inventoryLedger.delete({ where: { id: dup.id } })
+    }
+
+    // Recalculate running balances chronologically for this item and branch
+    await recalculateItemBalances(itemKey, branch, tx)
+
+    // Calculate dynamic stock levels across all materials
+    const currentStock = await getCurrentStockLevels('All', targetMonth, tx)
+
+    const updatedItem = currentStock.find((s: any) => s.key === itemKey)
+    const karachiStock = updatedItem ? updatedItem.karachiStock : (branch === 'Karachi' ? targetQty : 0)
+    const lahoreStock = updatedItem ? updatedItem.lahoreStock : (branch === 'Lahore' ? targetQty : 0)
+    const availableStock = Math.round((karachiStock + lahoreStock) * 100) / 100
+
+    return {
+      entry: ledgerEntry,
+      currentStock,
+      karachiStock,
+      lahoreStock,
+      availableStock,
+      branchStock: branch === 'Karachi' ? karachiStock : lahoreStock,
+    }
+  }
+
+  // If already inside an existing Prisma transaction, reuse it
+  if (clientOrTx && typeof clientOrTx.$transaction !== 'function') {
+    return await executeAdjustment(clientOrTx)
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    return await executeAdjustment(tx)
+  })
+}
+
+/**
  * Ensures that all 8 standard master material definitions exist in the database for both
  * Karachi and Lahore branches with baseline opening stock records.
  */
-export async function ensureMasterMaterialsExist(targetMonth?: string) {
-  await ensureInventoryLedgerColumns()
+export async function ensureMasterMaterialsExist(targetMonth?: string, clientOrTx?: any) {
+  const client = clientOrTx || prisma
+  await ensureInventoryLedgerColumns(client)
   const activeMonth = targetMonth || getCurrentActiveMonth()
   const firstDayDate = `${activeMonth}-01`
   const branches = ['Karachi', 'Lahore']
 
   // Clean up any legacy duplicate baseline rows created before schema update
-  await prisma.inventoryLedger.deleteMany({
+  await client.inventoryLedger.deleteMany({
     where: {
       movementType: 'CRM_USAGE',
       notes: { contains: 'baseline' },
@@ -711,19 +1003,29 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
   // Deduplicate any multiple baseline rows on firstDayDate for the same itemKey and branch
   for (const branch of branches) {
     for (const item of STANDARD_INVENTORY_ITEMS) {
-      const allOnFirstDay = await prisma.inventoryLedger.findMany({
+      const allOnFirstDay = await client.inventoryLedger.findMany({
         where: {
           itemKey: item.key,
           branch,
           date: firstDayDate,
           movementType: { in: ['OPENING_BALANCE', 'MANUAL_ADJUSTMENT'] },
         },
-        orderBy: { openingStock: 'desc' },
+        orderBy: [
+          { updatedAt: 'desc' },
+          { createdAt: 'desc' },
+        ],
       })
       if (allOnFirstDay.length > 1) {
+        allOnFirstDay.sort((a: any, b: any) => {
+          const aIsManual = a.movementType === 'MANUAL_ADJUSTMENT'
+          const bIsManual = b.movementType === 'MANUAL_ADJUSTMENT'
+          if (aIsManual && !bIsManual) return -1
+          if (!aIsManual && bIsManual) return 1
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        })
         const toDelete = allOnFirstDay.slice(1)
         for (const d of toDelete) {
-          await prisma.inventoryLedger.delete({ where: { id: d.id } })
+          await client.inventoryLedger.delete({ where: { id: d.id } })
         }
       }
     }
@@ -734,7 +1036,7 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
     for (const item of STANDARD_INVENTORY_ITEMS) {
       const rollForwardOpening = await getPrecedingMonthClosingStock(item.key, branch, activeMonth)
 
-      const existingBaseline = await prisma.inventoryLedger.findFirst({
+      const existingBaseline = await client.inventoryLedger.findFirst({
         where: {
           itemKey: item.key,
           branch,
@@ -744,7 +1046,7 @@ export async function ensureMasterMaterialsExist(targetMonth?: string) {
       })
 
       if (!existingBaseline) {
-        await prisma.inventoryLedger.create({
+        await client.inventoryLedger.create({
           data: {
             date: firstDayDate,
             monthKey: activeMonth,
