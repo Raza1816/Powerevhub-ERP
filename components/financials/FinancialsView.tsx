@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { useApp } from '@/components/common/AppContext'
+import { useBranch } from '@/app/context/BranchContext'
 import { GeneralExpensesView } from './GeneralExpensesView'
 import { PayrollLedgerView } from './PayrollLedgerView'
 import { VoucherClaimsManager } from './VoucherClaimsManager'
@@ -12,11 +13,12 @@ import { formatMonthLabel } from '@/lib/dateUtils'
 
 export function FinancialsView({ defaultSubTab = 'expenses' }: { defaultSubTab?: 'expenses' | 'payroll' | 'overview' | 'vouchers' }) {
   const { selectedMonth, refreshKey } = useApp()
+  const { selectedBranch } = useBranch()
   const [subTab, setSubTab] = useState<'expenses' | 'payroll' | 'overview' | 'vouchers'>(defaultSubTab)
   const [dashboardData, setDashboardData] = useState<any>(null)
 
   useEffect(() => {
-    fetch(`/api/dashboard?month=${selectedMonth}`)
+    fetch(`/api/dashboard?month=${selectedMonth}&branch=${encodeURIComponent(selectedBranch)}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.success) {
@@ -24,7 +26,7 @@ export function FinancialsView({ defaultSubTab = 'expenses' }: { defaultSubTab?:
         }
       })
       .catch((err) => console.error('Failed to load dashboard data in financials:', err))
-  }, [selectedMonth, refreshKey])
+  }, [selectedMonth, selectedBranch, refreshKey])
 
   return (
     <div className="space-y-6 pb-12">

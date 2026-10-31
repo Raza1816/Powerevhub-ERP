@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentActiveMonth, isMonthArchived } from '@/lib/dateUtils'
+import { DEFAULT_UNIT_RATES } from '@/lib/pricing'
+import {
+  STANDARD_INVENTORY_ITEMS,
+  calculateBranchStock,
+  normalizeInventoryItem,
+} from '@/lib/inventory'
 
 export const dynamic = 'force-dynamic'
 
@@ -251,7 +257,14 @@ export async function GET(request: NextRequest) {
     let bankPayrollOutflow = 0
 
     for (const pay of payrollRecords) {
-      totalGrossPayroll += pay.totalGrossEarnings
+      const recordGross =
+        pay.totalGrossEarnings ||
+        (pay.baseSalary || 0) +
+          (pay.overtimeAmount || 0) +
+          (pay.foodIncentive || 0) +
+          (pay.fuelIncentive || 0) +
+          (pay.installationIncentive || 0)
+      totalGrossPayroll += recordGross
       totalNetPayroll += pay.netPayable
       totalAdvanceDeductions += pay.advanceDeduction
       payrollBaseSalaries += pay.baseSalary
@@ -334,7 +347,6 @@ export async function GET(request: NextRequest) {
     const availableBank = Math.round((clientPaymentsBank - bankTotalOutflow) * 100) / 100
 
     const totalLiquidBalance = Math.round((availableCash + availableBank) * 100) / 100
-    const grossProfitMargin = totalRevenue > 0 ? Math.round((totalGrossProfit / totalRevenue) * 10000) / 100 : 0
 
     // 13. Source & Technician Analytics
     const sourceAnalytics = Object.entries(sourceMap).map(([source, stats]) => ({
@@ -354,8 +366,123 @@ export async function GET(request: NextRequest) {
       avgRevenuePerJob: stats.count > 0 ? Math.round(stats.revenue / stats.count) : 0,
     })).sort((a, b) => b.revenue - a.revenue)
 
-    // 14. Automated Income Statement (P&L) breakdown
-    const totalDirectCOGS = Math.round(
+    // 14. Dynamic Unit Rate Resolution & Periodic Inventory Valuation (Read-Only)
+    const activeUnitRateRows = await prisma.unitRate.findMany()
+    const masterRatesByKey: Record<string, number> = {
+      cable_16mm: DEFAULT_UNIT_RATES.cable_16mm.rate,
+      cable_10mm: DEFAULT_UNIT_RATES.cable_10mm.rate,
+      cable_6mm: DEFAULT_UNIT_RATES.cable_6mm.rate,
+      breaker_box: DEFAULT_UNIT_RATES.breaker_box.rate,
+      earthing_rod: DEFAULT_UNIT_RATES.earthing_rod.rate,
+      wpb: DEFAULT_UNIT_RATES.wpb.rate,
+      nin_uvr: DEFAULT_UNIT_RATES.nin_uvr.rate,
+      rcbo_breaker: DEFAULT_UNIT_RATES.rcbo_breaker.rate,
+    }
+
+    for (const r of activeUnitRateRows) {
+      if (r.active === false) continue
+      const norm = normalizeInventoryItem(r.itemKey || r.itemName)
+      if (norm.key in masterRatesByKey) {
+        masterRatesByKey[norm.key] = Number(r.rate) || 0
+      } else if (r.itemKey in masterRatesByKey) {
+        masterRatesByKey[r.itemKey] = Number(r.rate) || 0
+      }
+    }
+
+    const activeBranches = branch && branch !== 'All' ? [branch] : ['Karachi', 'Lahore']
+    let openingInventoryValuation = 0
+    let closingInventoryValuation = 0
+
+    const inventoryValuationItems: Array<{
+      key: string
+      name: string
+      unit: string
+      masterUnitRate: number
+      openingUnits: number
+      openingValuation: number
+      restockedUnits: number
+      usedUnits: number
+      closingUnits: number
+      closingValuation: number
+    }> = []
+
+    for (const item of STANDARD_INVENTORY_ITEMS) {
+      let itemOpeningUnits = 0
+      let itemRestockedUnits = 0
+      let itemUsedUnits = 0
+      let itemClosingUnits = 0
+
+      for (const b of activeBranches) {
+        const stockInfo = await calculateBranchStock(item.key, b, month, prisma)
+        itemOpeningUnits += stockInfo.openingStock
+        itemRestockedUnits += stockInfo.totalRestocked
+        itemUsedUnits += stockInfo.totalCrmUsed
+        itemClosingUnits += stockInfo.currentStock
+      }
+
+      itemOpeningUnits = Math.round(itemOpeningUnits * 100) / 100
+      itemRestockedUnits = Math.round(itemRestockedUnits * 100) / 100
+      itemUsedUnits = Math.round(itemUsedUnits * 100) / 100
+      itemClosingUnits = Math.round(itemClosingUnits * 100) / 100
+
+      const masterRate = masterRatesByKey[item.key] ?? 0
+      const itemOpeningVal = Math.round(itemOpeningUnits * masterRate * 100) / 100
+      const itemClosingVal = Math.round(itemClosingUnits * masterRate * 100) / 100
+
+      openingInventoryValuation += itemOpeningVal
+      closingInventoryValuation += itemClosingVal
+
+      inventoryValuationItems.push({
+        key: item.key,
+        name: item.name,
+        unit: item.unit,
+        masterUnitRate: masterRate,
+        openingUnits: itemOpeningUnits,
+        openingValuation: itemOpeningVal,
+        restockedUnits: itemRestockedUnits,
+        usedUnits: itemUsedUnits,
+        closingUnits: itemClosingUnits,
+        closingValuation: itemClosingVal,
+      })
+    }
+
+    openingInventoryValuation = Math.round(openingInventoryValuation * 100) / 100
+    closingInventoryValuation = Math.round(closingInventoryValuation * 100) / 100
+
+    // 15. Dynamic Income Statement (P&L) Mathematical Formulation
+    // 1) Gross Revenue (Top Line)
+    const grossRevenue = Math.round(totalRevenue * 100) / 100
+
+    // 2) Cost of Goods Sold (COGS) [Standard Periodic Inventory Method]
+    // Periodic Material COGS = (Opening Inventory Valuation + Total Vendor Purchases) - Closing Inventory Valuation
+    const vendorPurchasesTotal = Math.round(totalPurchases * 100) / 100
+    const periodicMaterialCOGS =
+      Math.round((openingInventoryValuation + vendorPurchasesTotal - closingInventoryValuation) * 100) / 100
+
+    // Direct Site Add-ons & Expenses (Job-Level COGS)
+    // Site Add-on Costs = Sum(Additional Supply Cost + Misc Expenses (Fuel, Site) from completed jobs)
+    const siteAddonCosts = Math.round((totalAdditionalSupplyCost + totalMiscExpenses) * 100) / 100
+
+    // Total COGS = Periodic Material COGS + Site Add-on Costs
+    const totalCOGS = Math.round((periodicMaterialCOGS + siteAddonCosts) * 100) / 100
+
+    // 3) Gross Profit & Gross Margin %
+    const grossProfit = Math.round((grossRevenue - totalCOGS) * 100) / 100
+    const grossProfitMargin = grossRevenue > 0 ? Math.round((grossProfit / grossRevenue) * 10000) / 100 : 0
+
+    // 4) Operating Expenses (OpEx)
+    // General OpEx = Sum(Amount of all OpEx records in active cycle: Rent, Fuel, Utilities, Maintenance, etc.)
+    const generalOpEx = Math.round(totalGeneralExpenses * 100) / 100
+    // Field-Staff Payroll & Variable Incentives = Sum(Base Salary + Variable Per-Job Installation Incentives + Overtime + Allowances)
+    const payrollAndIncentives = Math.round(totalGrossPayroll * 100) / 100
+    // Total Operating Expenses = General OpEx + Payroll & Incentives
+    const totalOperatingExpenses = Math.round((generalOpEx + payrollAndIncentives) * 100) / 100
+
+    // 5) Net Profit (Bottom Line) & Net Margin %
+    const netProfit = Math.round((grossProfit - totalOperatingExpenses) * 100) / 100
+    const netProfitMargin = grossRevenue > 0 ? Math.round((netProfit / grossRevenue) * 10000) / 100 : 0
+
+    const jobLevelDirectCOGS = Math.round(
       (total16mmCost +
         total10mmCost +
         total6mmCost +
@@ -368,20 +495,24 @@ export async function GET(request: NextRequest) {
         100
     ) / 100
 
-    const totalOperatingOverheads = Math.round(
-      (totalGeneralExpenses + totalMiscExpenses + totalGrossPayroll) * 100
-    ) / 100
-
-    const netProfit = Math.round((totalRevenue - totalDirectCOGS - totalOperatingOverheads) * 100) / 100
-    const netProfitMargin = totalRevenue > 0 ? Math.round((netProfit / totalRevenue) * 10000) / 100 : 0
-
     const incomeStatement = {
-      grossRevenue: totalRevenue,
+      grossRevenue,
       paidRevenue: totalPaidRevenue,
       uncollectedReceivables: totalTradeReceivables,
       customerTradeReceivables,
       bydVoucherReceivables,
       cogs: {
+        openingInventoryValuation,
+        vendorPurchases: vendorPurchasesTotal,
+        closingInventoryValuation,
+        periodicMaterialCOGS,
+        additionalSupplyCost: Math.round(totalAdditionalSupplyCost * 100) / 100,
+        miscSiteExpenses: Math.round(totalMiscExpenses * 100) / 100,
+        siteAddonCosts,
+        totalCOGS,
+        totalDirectCOGS: totalCOGS,
+        jobLevelDirectCOGS,
+        inventoryValuationItems,
         cable16mmCost: total16mmCost,
         cable10mmCost: total10mmCost,
         cable6mmCost: total6mmCost,
@@ -390,14 +521,16 @@ export async function GET(request: NextRequest) {
         wpbCost: totalWpbCost,
         ninUvrCost: totalNinUvrCost,
         rcboBreakerCost: totalRcboBreakerCost,
-        additionalSupplyCost: totalAdditionalSupplyCost,
-        totalDirectCOGS,
       },
+      grossProfit,
+      grossProfitMargin,
       operatingExpenses: {
-        generalExpenses: totalGeneralExpenses,
+        generalExpenses: generalOpEx,
         generalExpensesByCategory: opExCategoryList,
+        payrollAndIncentives,
         miscFieldExpenses: totalMiscExpenses,
-        totalOverheads: totalGeneralExpenses + totalMiscExpenses,
+        totalOperatingExpenses,
+        totalOverheads: generalOpEx,
       },
       payrollExpenses: {
         baseSalaries: payrollBaseSalaries,
@@ -406,23 +539,23 @@ export async function GET(request: NextRequest) {
         fuelIncentives: payrollFuel,
         installationIncentives: payrollInstallation,
         advanceDeductions: totalAdvanceDeductions,
-        totalGrossPayroll,
+        totalGrossPayroll: payrollAndIncentives,
         totalNetPaid: totalNetPayroll,
       },
-      totalOperatingOverheads,
+      totalOperatingExpenses,
+      totalOperatingOverheads: totalOperatingExpenses,
       vendorProcurement: {
-        totalPurchases,
+        totalPurchases: vendorPurchasesTotal,
         vendorCashPurchases,
         vendorBankPurchases,
         vendorUnpaidPurchases,
         vendorPayables: vendorUnpaidPurchases,
       },
-      grossProfit: totalGrossProfit,
       netProfit,
       netProfitMargin,
     }
 
-    // 15. Fetch distinct months for selector
+    // 16. Fetch distinct months for selector
     const distinctJobMonths = await prisma.crmJob.findMany({ select: { monthKey: true }, distinct: ['monthKey'] })
     const distinctPurchaseMonths = await prisma.vendorPurchase.findMany({ select: { monthKey: true }, distinct: ['monthKey'] })
     const distinctExpenseMonths = await prisma.generalExpense.findMany({ select: { monthKey: true }, distinct: ['monthKey'] })
@@ -446,25 +579,34 @@ export async function GET(request: NextRequest) {
       isArchived,
       kpis: {
         totalInstallations,
-        totalRevenue,
+        totalRevenue: grossRevenue,
         totalTradeReceivables,
         customerTradeReceivables,
         bydVoucherReceivables,
         unsettledVoucherCount,
         totalPaidRevenue,
-        totalGrossProfit,
+        totalGrossProfit: grossProfit,
         grossProfitMargin,
+        jobLevelGrossProfit: totalGrossProfit,
         totalJobCosts,
-        totalPurchases,
+        openingInventoryValuation,
+        closingInventoryValuation,
+        periodicMaterialCOGS,
+        siteAddonCosts,
+        totalCOGS,
+        totalOperatingExpenses,
+        netProfit,
+        netProfitMargin,
+        totalPurchases: vendorPurchasesTotal,
         vendorCashPurchases,
         vendorBankPurchases,
         vendorUnpaidPurchases,
         vendorPayables: vendorUnpaidPurchases,
-        totalGeneralExpenses,
+        totalGeneralExpenses: generalOpEx,
         cashGeneralExpenses,
         bankGeneralExpenses,
         totalSalaryAdvances,
-        totalGrossPayroll,
+        totalGrossPayroll: payrollAndIncentives,
         totalNetPayroll,
         totalAdvanceDeductions,
         clientPaymentsCash,

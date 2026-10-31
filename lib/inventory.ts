@@ -617,43 +617,63 @@ export async function calculateBranchStock(
   })
 
   // Identify all baseline or manual adjustment rows in the month
-  const baselineRows = rows.filter((r: any) =>
+  const isBaselineRow = (r: any) =>
     r.movementType === 'OPENING_BALANCE' ||
     r.movementType === 'MANUAL_ADJUSTMENT' ||
+    (r.usedQty === 0 && r.restockQty === 0 && !r.referenceId) ||
     (r.notes && (
       r.notes.toLowerCase().includes('manual adjustment') ||
       r.notes.toLowerCase().includes('manual override') ||
       r.notes.toLowerCase().includes('opening inventory baseline') ||
-      r.notes.toLowerCase().includes('opening stock set')
+      r.notes.toLowerCase().includes('opening stock')
     ))
-  )
+
+  const baselineRows = rows.filter(isBaselineRow)
 
   let latestBaselineRow: any = null
   if (baselineRows.length > 0) {
-    // Sort chronologically: by date ascending, then if same date, manual adjustment supersedes opening balance, then createdAt
+    // Sort chronologically: by date ascending, then if same date, manual/non-zero supersedes auto-zero baseline, then updatedAt/createdAt
     baselineRows.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date)
+      const aIsAutoZero =
+        (Number(a.openingStock) || 0) === 0 &&
+        a.notes &&
+        a.notes.toLowerCase().includes('opening inventory baseline')
+      const bIsAutoZero =
+        (Number(b.openingStock) || 0) === 0 &&
+        b.notes &&
+        b.notes.toLowerCase().includes('opening inventory baseline')
+      if (aIsAutoZero && !bIsAutoZero) return -1
+      if (!aIsAutoZero && bIsAutoZero) return 1
       const aIsManual = a.movementType === 'MANUAL_ADJUSTMENT'
       const bIsManual = b.movementType === 'MANUAL_ADJUSTMENT'
       if (aIsManual && !bIsManual) return 1
       if (!aIsManual && bIsManual) return -1
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      const aTime = new Date(a.updatedAt || a.createdAt).getTime()
+      const bTime = new Date(b.updatedAt || b.createdAt).getTime()
+      return aTime - bTime
     })
     latestBaselineRow = baselineRows[baselineRows.length - 1]
   }
 
+  const prevMonthClosing = await getPrecedingMonthClosingStock(itemKey, branch, targetMonth, client)
+
   let baselineStock = 0
   let baselineDate: string | null = null
   let baselineId: string | null = null
-  let baselineTime = 0
 
   if (latestBaselineRow) {
-    baselineStock = Number(latestBaselineRow.openingStock) || 0
+    const isUntouchedAutoZero =
+      (Number(latestBaselineRow.openingStock) || 0) === 0 &&
+      latestBaselineRow.notes &&
+      latestBaselineRow.notes.toLowerCase().includes('opening inventory baseline')
+    baselineStock = isUntouchedAutoZero && prevMonthClosing > 0
+      ? prevMonthClosing
+      : (Number(latestBaselineRow.openingStock) || 0)
     baselineDate = latestBaselineRow.date
     baselineId = latestBaselineRow.id
-    baselineTime = new Date(latestBaselineRow.createdAt).getTime()
   } else {
-    baselineStock = await getPrecedingMonthClosingStock(itemKey, branch, targetMonth, client)
+    baselineStock = prevMonthClosing
     baselineDate = null
     baselineId = null
   }
@@ -670,21 +690,11 @@ export async function calculateBranchStock(
     totalMonthlyRestocked += rRestock
     totalMonthlyUsed += rUsed
 
-    // Skip the baseline row itself
-    if (r.id === baselineId) continue
-    if (r.movementType === 'OPENING_BALANCE' || r.movementType === 'MANUAL_ADJUSTMENT') continue
+    // Skip any baseline row
+    if (r.id === baselineId || isBaselineRow(r)) continue
 
-    let isAfter = false
-    if (!baselineDate) {
-      isAfter = true
-    } else if (r.date > baselineDate) {
-      isAfter = true
-    } else if (r.date === baselineDate) {
-      const rTime = new Date(r.createdAt).getTime()
-      if (rTime >= baselineTime) {
-        isAfter = true
-      }
-    }
+    // Baseline on a given date establishes the opening stock at the start of that date
+    const isAfter = !baselineDate || r.date >= baselineDate
 
     if (isAfter) {
       restockAfterBaseline += rRestock
@@ -694,11 +704,38 @@ export async function calculateBranchStock(
 
   const currentStock = Math.round((baselineStock + restockAfterBaseline - usedAfterBaseline) * 100) / 100
 
-  // Month opening stock baseline on 1st of month (or earliest baseline/preceding)
-  const firstDayRow = baselineRows.find((r: any) => r.date === firstDayDate)
-  const openingStock = firstDayRow
-    ? Number(firstDayRow.openingStock) || 0
-    : (baselineRows.length > 0 ? Number(baselineRows[0].openingStock) || 0 : baselineStock)
+  // Month opening stock baseline on 1st of month (or prior month closing carryover)
+  const firstDayRows = baselineRows.filter((r: any) => r.date === firstDayDate)
+  const firstDayRow = firstDayRows.length > 0 ? firstDayRows[firstDayRows.length - 1] : null
+
+  let openingStock = 0
+  if (firstDayRow) {
+    const firstVal = Number(firstDayRow.openingStock) || 0
+    const isUntouchedAutoZero =
+      firstVal === 0 &&
+      firstDayRow.notes &&
+      firstDayRow.notes.toLowerCase().includes('opening inventory baseline')
+    if (isUntouchedAutoZero) {
+      if (prevMonthClosing > 0) {
+        openingStock = prevMonthClosing
+      } else {
+        const explicitOpeningRow = baselineRows.find(
+          (r: any) =>
+            r.id !== firstDayRow.id &&
+            (Number(r.openingStock) || 0) > 0 &&
+            r.notes &&
+            r.notes.toLowerCase().includes('opening stock')
+        )
+        openingStock = explicitOpeningRow ? Number(explicitOpeningRow.openingStock) || 0 : 0
+      }
+    } else {
+      openingStock = firstVal
+    }
+  } else if (baselineRows.length > 0) {
+    openingStock = Number(baselineRows[0].openingStock) || 0
+  } else {
+    openingStock = prevMonthClosing
+  }
 
   return {
     currentStock,
