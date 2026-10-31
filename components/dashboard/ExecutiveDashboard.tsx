@@ -212,11 +212,11 @@ export function ExecutiveDashboard({ onTabChange }: { onTabChange?: (tab: string
         {/* 6. Operational Overhead & Payroll */}
         <KpiCard
           title="OpEx & Payroll Overheads"
-          value={formatCurrency(kpis.totalOperatingExpenses ?? ((kpis.totalGeneralExpenses || 0) + (kpis.totalGrossPayroll || 0)))}
+          value={formatCurrency((kpis.totalGeneralExpenses || 0) + (kpis.totalGrossPayroll || 0) + (kpis.totalMiscExpenses || 0))}
           subtitle={`OpEx: ${formatCurrency(kpis.totalGeneralExpenses || 0)} | Staff: ${formatCurrency(kpis.totalGrossPayroll || 0)}`}
           icon={Receipt}
           colorClass="text-rose-500 bg-rose-500/10 border-rose-500/20"
-          formulaTooltip="Total Operating Expenses = General OpEx + Field-Staff Payroll & Variable Job Incentives."
+          formulaTooltip="Total non-material business operational overheads and employee salaries/incentives."
         />
 
         {/* 7. Total Gross Profit & Margin */}
@@ -228,7 +228,7 @@ export function ExecutiveDashboard({ onTabChange }: { onTabChange?: (tab: string
           colorClass="text-emerald-500 bg-emerald-500/10 border-emerald-500/20"
           trend={`${kpis.grossProfitMargin || 0}% margin`}
           trendType={kpis.grossProfitMargin >= 20 ? 'positive' : 'neutral'}
-          formulaTooltip="Gross Profit = Gross Revenue - Total COGS (Periodic Material COGS + Site Add-on Costs)."
+          formulaTooltip="Dynamic Gross Profit = Manual Bill Amount - (Locked Material Costs + Additional Supplies + Misc Exp)."
         />
 
         {/* 8. Available Cash Balance */}
